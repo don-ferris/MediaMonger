@@ -53,15 +53,16 @@ A fixed‑header toolbar with iframe‑based content panes:
 2. Start the containerized stack:
     ```bash
     docker compose up -d
-• setup wizard runs automatically on first run
+  • setup wizard runs automatically on first run
 
 3. Follow the guided tutorial to configure:
-• RealDebrid account
-• Jellyfin instance
-• DebridMediaManager
-• MediaMonger settings
+  • RealDebrid account
+  • Jellyfin instance
+  • DebridMediaManager
+  • MediaMonger settings
 
-4. Open the MediaMonger web UI in your browser and begin building your offline library.
+4. go to [your server IP]:2222 to open the MediaMonger web UI in your browser and begin building your offline library.
+5. Go to [your server IP] to use Jellyfin and start watching movies from your library.
 
 
 ---
