@@ -275,45 +275,45 @@ class DownloadManager:
         except OSError as e:
             return False, None
     
-    def check_if_file_is_active_download(self, decoded_filename):
-        """Check if file exists and is an active download by checking size changes - use DECODED filename"""
-        filepath = Path.cwd() / decoded_filename
-        
-        if not filepath.exists():
-            return False, None  # File doesn't exist
-        
-        # Get initial size
-        try:
-            size1 = filepath.stat().st_size
-        except OSError:
-            return False, None  # Can't stat file
-        
-        # Wait 10 seconds
-        time.sleep(10)
-        
-        # Get size again
-        try:
-            size2 = filepath.stat().st_size
-        except OSError:
-            return False, None  # Can't stat file
-        
-        if size1 != size2:
-            return True, size2  # File is actively downloading
-        
-        # Wait another 10 seconds
-        time.sleep(10)
-        
-        # Get size one more time
-        try:
-            size3 = filepath.stat().st_size
-        except OSError:
-            return False, None
-        
-        if size2 != size3:
-            return True, size3  # File is actively downloading
-        
-        # File size hasn't changed in 20 seconds - not an active download
-        return False, size3
+def check_if_file_is_active_download(self, decoded_filename):
+    """Check if file exists and is an active download by checking size changes - use DECODED filename"""
+    filepath = Path.cwd() / decoded_filename
+    
+    if not filepath.exists():
+        return False, None  # File doesn't exist
+    
+    # Get initial size
+    try:
+        size1 = filepath.stat().st_size
+    except OSError:
+        return False, None  # Can't stat file
+    
+    # Wait 2.5 seconds for first check
+    time.sleep(2.5)
+    
+    # Get size again
+    try:
+        size2 = filepath.stat().st_size
+    except OSError:
+        return False, None  # Can't stat file
+    
+    if size1 != size2:
+        return True, size2  # File is actively downloading
+    
+    # Wait another 2.5 seconds for second check
+    time.sleep(2.5)
+    
+    # Get size one more time
+    try:
+        size3 = filepath.stat().st_size
+    except OSError:
+        return False, None
+    
+    if size2 != size3:
+        return True, size3  # File is actively downloading
+    
+    # File size hasn't changed in 5 seconds - not an active download
+    return False, size3
     
     def update_slot_status(self, slot_id, status):
         """Update status for a specific slot"""
@@ -539,133 +539,134 @@ class DownloadManager:
             self.log(f"ERROR moving file to series directory: {e}")
             return None
     
-    def process_download(self, line_num, url, slot_id):
-        """Process a single download"""
-        # Clean the URL first
-        url = url.strip().replace('\n', ' ').replace('\r', ' ').replace('\0', '')
-        url = ' '.join(url.split())
+def process_download(self, line_num, url, slot_id):
+    """Process a single download"""
+    # Clean the URL first
+    url = url.strip().replace('\n', ' ').replace('\r', ' ').replace('\0', '')
+    url = ' '.join(url.split())
+    
+    # Extract filename from URL
+    encoded_filename = self.extract_filename_from_url(url)
+    decoded_filename = self.decode_filename(encoded_filename)
+    
+    self.log(f"Processing: {url}")
+    self.log(f"  Encoded filename: {encoded_filename}")
+    self.log(f"  Decoded filename: {decoded_filename}")
+    
+    # Check if file already exists in current directory - use DECODED filename
+    file_exists, existing_size = self.check_existing_file(decoded_filename)
+    
+    if file_exists:
+        self.log(f"Local file exists: {decoded_filename}")
+        self.log(f"Local file size: {existing_size:,} bytes")
         
-        # Extract filename from URL
-        encoded_filename = self.extract_filename_from_url(url)
-        decoded_filename = self.decode_filename(encoded_filename)
-        
-        self.log(f"Processing: {url}")
-        self.log(f"  Encoded filename: {encoded_filename}")
-        self.log(f"  Decoded filename: {decoded_filename}")
-        
-        # Check if file already exists in current directory - use DECODED filename
-        file_exists, existing_size = self.check_existing_file(decoded_filename)
-        
-        if file_exists:
-            self.log(f"Local file exists: {decoded_filename}")
-            self.log(f"Local file size: {existing_size:,} bytes")
-            
-            # Now get expected file size for comparison
-            self.log(f"Getting expected file size for comparison...")
-            expected_size = self.get_expected_size(url)
-            
-            if expected_size is not None:
-                self.log(f"Expected file size: {expected_size:,} bytes")
-                self.log(f"Test condition: local size == expected size? {existing_size == expected_size}")
-                
-                if existing_size == expected_size:
-                    self.log(f"Result: File already exists with correct size")
-                    
-                    # Move to series directory
-                    local_file = Path.cwd() / decoded_filename
-                    moved_file = self.move_to_series_directory(local_file, decoded_filename)
-                    
-                    if moved_file:
-                        # Mark as complete
-                        self.update_line_status(line_num, f"# COMPLETE (already existed)")
-                        display_name = self.format_filename_for_display(decoded_filename)
-                        size_mb = existing_size / (1024 * 1024)
-                        self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [EXISTED, {size_mb:.1f}MB]")
-                        return True, "ALREADY_EXISTED"
-                    else:
-                        self.log(f"Result: FAILED - could not move existing file")
-                        self.update_line_status(line_num, f"# FAILED - could not move existing file")
-                        return False, "MOVE_FAILED"
-                else:
-                    self.log(f"Result: File exists but size mismatch ({existing_size:,} != {expected_size:,})")
-                    self.log(f"  Difference: {abs(existing_size - expected_size):,} bytes")
-                    
-                    # Calculate percentage difference for logging
-                    if expected_size > 0:
-                        percent_diff = abs(existing_size - expected_size) / expected_size * 100
-                        self.log(f"  Difference: {percent_diff:.2f}%")
-                    
-                    # FILE SIZE MISMATCH - DO NOT MOVE THE FILE
-                    self.log(f"  Action: NOT moving file - size mismatch indicates incomplete download")
-                    self.update_line_status(line_num, f"# FAILED - size mismatch (local {existing_size:,} != expected {expected_size:,})")
-                    return False, "SIZE_MISMATCH"
-            else:
-                self.log(f"Result: Could not get expected file size for comparison")
-                # Cannot verify file - do not move it
-                self.log(f"  Action: NOT moving file - cannot verify completeness")
-                self.update_line_status(line_num, f"# FAILED - cannot verify file size")
-                return False, "NO_EXPECTED_SIZE"
-        else:
-            self.log(f"No local file found: {decoded_filename}")
-        
-        # Check if file is actively downloading - use DECODED filename
-        is_active, current_size = self.check_if_file_is_active_download(decoded_filename)
-        
-        if is_active:
-            self.log(f"Result: SKIPPED - file actively downloading")
-            display_name = self.format_filename_for_display(decoded_filename)
-            self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [ACTIVE]")
-            return False, "ACTIVE"
-        
-        # Get expected size for new download
+        # Now get expected file size for comparison
+        self.log(f"Getting expected file size for comparison...")
         expected_size = self.get_expected_size(url)
         
-        # Stagger start times
-        if slot_id == 0:
-            time.sleep(5)
-        elif slot_id == 1:
-            time.sleep(10)
-        elif slot_id == 2:
-            time.sleep(15)
-        # Slot 3 (index 3) starts immediately
-        
-        # Start download - wget will save with decoded filename
-        completed, local_file = self.download_with_wget(url, decoded_filename, slot_id)
-        
-        if not completed or not local_file:
-            # Mark as failed
-            self.update_line_status(line_num, f"# FAILED - ")
-            self.log(f"Result: FAILED - download error")
-            return False, "DOWNLOAD_FAILED"
-        
-        # Verify download
-        verified, actual_size = self.verify_download(url, local_file, expected_size)
-        
-        if not verified:
-            # Mark as failed with size mismatch
-            self.update_line_status(line_num, f"# FAILED - ")
-            self.log(f"Result: FAILED - verification failed (size mismatch)")
-            # Delete the failed file
-            try:
-                local_file.unlink()
-                self.log(f"Deleted failed file: {local_file}")
-            except Exception as e:
-                self.log(f"Error deleting failed file: {e}")
-            return False, "VERIFICATION_FAILED"
-        
-        # Move to series directory
-        moved_file = self.move_to_series_directory(local_file, decoded_filename)
-        
-        if not moved_file:
-            # Mark as failed to move
-            self.update_line_status(line_num, f"# FAILED - ")
-            self.log(f"Result: FAILED - could not move to series directory")
-            return False, "MOVE_FAILED"
-        
-        # Mark as complete
-        self.update_line_status(line_num, f"# COMPLETE")
-        self.log(f"Result: SUCCESS")
-        return True, "COMPLETE"
+        if expected_size is not None:
+            self.log(f"Expected file size: {expected_size:,} bytes")
+            self.log(f"Test condition: local size == expected size? {existing_size == expected_size}")
+            
+            if existing_size == expected_size:
+                self.log(f"Result: File already exists with correct size")
+                
+                # Move to series directory
+                local_file = Path.cwd() / decoded_filename
+                moved_file = self.move_to_series_directory(local_file, decoded_filename)
+                
+                if moved_file:
+                    # Mark as complete
+                    self.update_line_status(line_num, f"# COMPLETE (already existed)")
+                    display_name = self.format_filename_for_display(decoded_filename)
+                    size_mb = existing_size / (1024 * 1024)
+                    self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [EXISTED, {size_mb:.1f}MB]")
+                    return True, "ALREADY_EXISTED"
+                else:
+                    self.log(f"Result: FAILED - could not move existing file")
+                    self.update_line_status(line_num, f"# FAILED - could not move existing file")
+                    return False, "MOVE_FAILED"
+            else:
+                self.log(f"Result: File exists but size mismatch ({existing_size:,} != {expected_size:,})")
+                self.log(f"  Difference: {abs(existing_size - expected_size):,} bytes")
+                
+                # Calculate percentage difference for logging
+                if expected_size > 0:
+                    percent_diff = abs(existing_size - expected_size) / expected_size * 100
+                    self.log(f"  Difference: {percent_diff:.2f}%")
+                
+                # FILE SIZE MISMATCH - DO NOT MOVE THE FILE
+                self.log(f"  Action: NOT moving file - size mismatch indicates incomplete download")
+                self.update_line_status(line_num, f"# FAILED - size mismatch (local {existing_size:,} != expected {expected_size:,})")
+                return False, "SIZE_MISMATCH"
+        else:
+            self.log(f"Result: Could not get expected file size for comparison")
+            # Cannot verify file - do not move it
+            self.log(f"  Action: NOT moving file - cannot verify completeness")
+            self.update_line_status(line_num, f"# FAILED - cannot verify file size")
+            return False, "NO_EXPECTED_SIZE"
+    else:
+        self.log(f"No local file found: {decoded_filename}")
+    
+    # Check if file is actively downloading - use DECODED filename
+    # NOTE: This now only takes ~5 seconds instead of 20 (optimized check_if_file_is_active_download)
+    is_active, current_size = self.check_if_file_is_active_download(decoded_filename)
+    
+    if is_active:
+        self.log(f"Result: SKIPPED - file actively downloading")
+        display_name = self.format_filename_for_display(decoded_filename)
+        self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [ACTIVE]")
+        return False, "ACTIVE"
+    
+    # Get expected size for new download
+    expected_size = self.get_expected_size(url)
+    
+    # Stagger start times to avoid thundering herd
+    if slot_id == 0:
+        time.sleep(5)
+    elif slot_id == 1:
+        time.sleep(10)
+    elif slot_id == 2:
+        time.sleep(15)
+    # Slot 3 (index 3) starts immediately
+    
+    # Start download - wget will save with decoded filename
+    completed, local_file = self.download_with_wget(url, decoded_filename, slot_id)
+    
+    if not completed or not local_file:
+        # Mark as failed
+        self.update_line_status(line_num, f"# FAILED - ")
+        self.log(f"Result: FAILED - download error")
+        return False, "DOWNLOAD_FAILED"
+    
+    # Verify download
+    verified, actual_size = self.verify_download(url, local_file, expected_size)
+    
+    if not verified:
+        # Mark as failed with size mismatch
+        self.update_line_status(line_num, f"# FAILED - ")
+        self.log(f"Result: FAILED - verification failed (size mismatch)")
+        # Delete the failed file
+        try:
+            local_file.unlink()
+            self.log(f"Deleted failed file: {local_file}")
+        except Exception as e:
+            self.log(f"Error deleting failed file: {e}")
+        return False, "VERIFICATION_FAILED"
+    
+    # Move to series directory
+    moved_file = self.move_to_series_directory(local_file, decoded_filename)
+    
+    if not moved_file:
+        # Mark as failed to move
+        self.update_line_status(line_num, f"# FAILED - ")
+        self.log(f"Result: FAILED - could not move to series directory")
+        return False, "MOVE_FAILED"
+    
+    # Mark as complete
+    self.update_line_status(line_num, f"# COMPLETE")
+    self.log(f"Result: SUCCESS")
+    return True, "COMPLETE"
     
 def download_worker(self, slot_id):
     """Worker thread that processes downloads from the queue"""
