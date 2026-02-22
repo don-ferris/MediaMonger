@@ -394,18 +394,63 @@ def check_if_file_is_active_download(self, decoded_filename):
             
             time.sleep(0.5)  # Update twice per second
     
-    def format_filename_for_display(self, filename):
-        """Format filename for display: first 30 chars + ... + last 10 chars"""
-        # Clean the filename first
+def format_filename_for_display(self, filename):
+    """Format filename for display with robust handling for special characters and Unicode.
+    
+    Removes problematic characters and truncates safely for terminal display.
+    Returns a display-safe string that won't corrupt terminal output.
+    """
+    try:
+        # Step 1: Remove all problematic characters
+        # Remove control characters, ANSI codes, tabs, etc.
         filename = filename.replace('\n', ' ').replace('\r', ' ').replace('\0', '')
+        filename = filename.replace('\t', ' ')  # Tab characters
+        filename = filename.replace('\x1b', '')  # ESC character (ANSI codes start with ESC)
+        
+        # Step 2: Normalize whitespace
         filename = ' '.join(filename.split())
         
-        if len(filename) <= 43:  # 30 + 3 (...) + 10
+        # Step 3: Validate and clean Unicode
+        try:
+            # Encode to ASCII with errors='ignore' to strip non-ASCII characters
+            # Then decode back to get a clean string
+            ascii_clean = filename.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+            filename = ascii_clean
+        except Exception:
+            # If Unicode handling fails, use the original
+            pass
+        
+        # Step 4: Remove any remaining unprintable characters
+        filename = ''.join(char for char in filename if char.isprintable() or char == ' ')
+        
+        # Step 5: Set conservative display length limit
+        # Use 60 chars as max to account for:
+        # - 4 chars for slot number and colons "1: "
+        # - 20 chars for progress bar "[==========      ]"
+        # - 10 chars for percentage and status " 100% 100MB"
+        # Total terminal width is typically 80 chars, so 60 for filename is safe
+        max_display_length = 60
+        
+        # Step 6: Truncate intelligently
+        if len(filename) <= max_display_length:
             return filename
         
-        first_part = filename[:30]
-        last_part = filename[-10:]
-        return f"{first_part}...{last_part}"
+        # If we need to truncate, show first 25 and last 25 chars with ellipsis
+        first_part = filename[:25]
+        last_part = filename[-25:]
+        truncated = f"{first_part}...{last_part}"
+        
+        # Ensure even the truncated version isn't too long
+        if len(truncated) > max_display_length:
+            # If still too long, just take first 57 chars + "..."
+            return filename[:57] + "..."
+        
+        return truncated
+        
+    except Exception as e:
+        # If anything goes wrong, return a safe placeholder
+        self.log(f"Error formatting filename for display: {type(e).__name__}: {e}")
+        return "[filename display error]"
     
     def download_with_wget(self, url, decoded_filename, slot_id):
         """Download a file using wget with clean progress display - wget will decode filename automatically"""
