@@ -148,14 +148,20 @@ class DownloadManager:
         
         return lines, valid_links
     
-    def update_line_status(self, line_number, new_status):
-        """Update a specific line in the links file with fileinput"""
+def update_line_status(self, line_number, new_status):
+    """Update a specific line in the links file with fileinput - with error handling"""
+    try:
         # First, read the current line to understand its content
-        with open(self.links_file, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-            if line_number >= len(lines):
-                return False
-            original_line = lines[line_number].rstrip('\n')
+        try:
+            with open(self.links_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                if line_number >= len(lines):
+                    self.log(f"Error updating line {line_number}: line number out of range (file has {len(lines)} lines)")
+                    return False
+                original_line = lines[line_number].rstrip('\n')
+        except IOError as e:
+            self.log(f"Error reading links file before update: {e}")
+            return False
         
         # Prepare the new line
         if original_line.startswith('# '):
@@ -171,17 +177,33 @@ class DownloadManager:
         new_line = f"{new_status} {clean_line}"
         
         # Use fileinput for in-place editing (modifies only the target line)
-        current_line = 0
-        for line in fileinput.input(self.links_file, inplace=True):
-            line = line.rstrip('\n')
-            if current_line == line_number:
-                print(new_line)
-            else:
-                print(line)
-            current_line += 1
+        try:
+            current_line = 0
+            for line in fileinput.input(self.links_file, inplace=True):
+                line = line.rstrip('\n')
+                if current_line == line_number:
+                    print(new_line)
+                else:
+                    print(line)
+                current_line += 1
+            
+            self.log(f"Successfully updated line {line_number} with status: {new_status}")
+            return True
+            
+        except IOError as e:
+            self.log(f"Error during fileinput operation on line {line_number}: {e}")
+            return False
+        except PermissionError as e:
+            self.log(f"Permission denied updating links file on line {line_number}: {e}")
+            return False
+        except Exception as e:
+            self.log(f"Unexpected error updating line {line_number}: {type(e).__name__}: {e}")
+            return False
+            
+    except Exception as e:
+        self.log(f"Critical error in update_line_status for line {line_number}: {type(e).__name__}: {e}")
+        return False
         
-        return True
-    
     def extract_filename_from_url(self, url):
         """Extract filename from URL (without decoding)"""
         # Clean the URL first - remove any whitespace or control characters
