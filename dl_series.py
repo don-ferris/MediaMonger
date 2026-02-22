@@ -667,33 +667,49 @@ class DownloadManager:
         self.log(f"Result: SUCCESS")
         return True, "COMPLETE"
     
-    def download_worker(self, slot_id):
-        """Worker thread that processes downloads from the queue"""
-        while True:
+def download_worker(self, slot_id):
+    """Worker thread that processes downloads from the queue"""
+    while True:
+        try:
+            # Get next download from queue with timeout
+            item = self.download_queue.get(timeout=5)
+            if item is None:  # Sentinel value to stop worker
+                self.download_queue.task_done()
+                break
+            
+            # Increment active downloads counter
+            with self.lock:
+                self.active_downloads += 1
+            
             try:
-                # Get next download from queue with timeout
-                item = self.download_queue.get(timeout=5)
-                if item is None:  # Sentinel value to stop worker
-                    self.download_queue.task_done()
-                    break
-                
                 line_num, url = item
                 
                 # Process the download
                 success, status = self.process_download(line_num, url, slot_id)
                 
-                self.download_queue.task_done()
-                
-            except queue.Empty:
-                # Check if we should exit
+            finally:
+                # Decrement active downloads counter in finally block to ensure it always happens
                 with self.lock:
-                    if self.active_downloads == 0 and self.download_queue.empty():
-                        break
-                continue
-            except Exception as e:
-                self.log(f"Error in download worker {slot_id}: {e}")
+                    self.active_downloads -= 1
+                
                 self.download_queue.task_done()
-    
+            
+        except queue.Empty:
+            # Check if we should exit - but only if queue is truly empty and no downloads active
+            with self.lock:
+                if self.active_downloads == 0 and self.download_queue.empty():
+                    break
+            continue
+            
+        except Exception as e:
+            self.log(f"Error in download worker {slot_id}: {e}")
+            
+            # Make sure we decrement counter even on exception
+            with self.lock:
+                if self.active_downloads > 0:
+                    self.active_downloads -= 1
+            
+            self.download_queue.task_done()    
     def process_downloads(self):
         """Main download processing loop using queue"""
         # Read initial links
