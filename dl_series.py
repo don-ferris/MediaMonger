@@ -239,18 +239,20 @@ def update_line_status(self, line_number, new_status):
             filename = ' '.join(filename.split())
             return filename
     
-    def get_expected_size(self, url):
-        """Get expected file size from URL header - returns size in BYTES"""
+def get_expected_size(self, url):
+    """Get expected file size from URL header - returns size in BYTES. Optimized with aggressive timeouts."""
+    try:
+        # Clean the URL first
+        url = url.strip().replace('\n', ' ').replace('\r', ' ').replace('\0', '')
+        url = ' '.join(url.split())
+        
+        self.log(f"Getting expected size for: {url}")
+        
+        # Try wget with spider mode first (more reliable for headers)
+        # Use aggressive timeouts: 5 seconds for wget, 8 second subprocess timeout
+        cmd = ['wget', '--spider', '--server-response', '--timeout=5', '--tries=1', url]
         try:
-            # Clean the URL first
-            url = url.strip().replace('\n', ' ').replace('\r', ' ').replace('\0', '')
-            url = ' '.join(url.split())
-            
-            self.log(f"Getting expected size for: {url}")
-            
-            # Use wget with spider mode to get file info
-            cmd = ['wget', '--spider', '--server-response', '--timeout=10', '--tries=2', url]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
             
             # Parse Content-Length from output
             for line in result.stderr.split('\n'):
@@ -258,29 +260,41 @@ def update_line_status(self, line_number, new_status):
                     size_str = line.split('Content-Length:')[1].strip()
                     try:
                         size_bytes = int(size_str)
-                        self.log(f"Got expected size: {size_bytes:,} bytes")
+                        self.log(f"Got expected size via wget: {size_bytes:,} bytes")
                         return size_bytes
                     except ValueError:
                         continue
-            
-            # Try curl as fallback
-            cmd = ['curl', '-s', '-I', '-L', '--max-time', '10', url]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        except subprocess.TimeoutExpired:
+            self.log(f"wget timeout getting size for: {url}")
+        except Exception as e:
+            self.log(f"wget error getting size: {e}")
+        
+        # Try curl as fallback (lighter weight, faster for just headers)
+        # Use even more aggressive timeouts: 3 seconds for curl, 5 second subprocess timeout
+        cmd = ['curl', '-s', '-I', '-L', '--max-time', '3', '--connect-timeout', '2', url]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
             
             for line in result.stdout.split('\n'):
                 if 'content-length:' in line.lower():
                     size_str = line.split(':')[1].strip()
                     try:
                         size_bytes = int(size_str)
-                        self.log(f"Got expected size: {size_bytes:,} bytes")
+                        self.log(f"Got expected size via curl: {size_bytes:,} bytes")
                         return size_bytes
                     except ValueError:
                         continue
-                        
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, Exception) as e:
-            self.log(f"Error getting expected size: {e}")
+        except subprocess.TimeoutExpired:
+            self.log(f"curl timeout getting size for: {url}")
+        except Exception as e:
+            self.log(f"curl error getting size: {e}")
         
-        self.log("Could not get expected file size")
+        # If both methods failed, log and return None
+        self.log(f"Could not get expected file size for: {url}")
+        return None
+            
+    except Exception as e:
+        self.log(f"Unexpected error in get_expected_size: {type(e).__name__}: {e}")
         return None
     
 def check_existing_file(self, decoded_filename):
