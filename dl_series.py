@@ -99,17 +99,92 @@ class DownloadManager:
         # If we get here, file doesn't exist
         raise FileNotFoundError(f"Cannot find '{series_input}' or '{series_input}.links'")
     
-    def log(self, message, echo=False):
-        """Log message with timestamp - NO CONSOLE OUTPUT"""
+def log(self, message, echo=False):
+    """Log message with timestamp with comprehensive error handling and fallback mechanisms."""
+    try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         # Clean the message of any problematic characters for logging
         cleaned_message = message.replace('\n', ' ').replace('\r', ' ').replace('\0', '')
+        # Also remove tabs to prevent alignment issues
+        cleaned_message = cleaned_message.replace('\t', ' ')
         log_line = f"{timestamp} - {cleaned_message}"
         
-        with open(self.log_file, 'a', encoding='utf-8') as f:
+        # Attempt to write to log file
+        try:
+            with open(self.log_file, 'a', encoding='utf-8', buffering=1) as f:
+                f.write(log_line + "\n")
+                f.flush()  # Ensure immediate write to disk
+            return  # Success, exit early
+            
+        except IOError as e:
+            # IOError: general file I/O issues (permissions, disk errors, etc.)
+            self._handle_log_failure(log_line, f"IOError: {e}")
+            
+        except PermissionError as e:
+            # PermissionError: no write permissions on log file
+            self._handle_log_failure(log_line, f"PermissionError: {e}")
+            
+        except OSError as e:
+            # OSError: system-level errors (disk full, etc.)
+            self._handle_log_failure(log_line, f"OSError: {e}")
+            
+        except Exception as e:
+            # Catch any other unexpected errors
+            self._handle_log_failure(log_line, f"Unexpected error ({type(e).__name__}): {e}")
+            
+    except Exception as e:
+        # Outermost catch for completely unexpected failures
+        # Try to at least print to stderr as last resort
+        try:
+            print(f"[CRITICAL] Failed to process log message: {type(e).__name__}: {e}", file=sys.stderr)
+        except:
+            pass  # If even stderr fails, we've exhausted all options
+
+def _handle_log_failure(self, log_line, error_reason):
+    """Handle log file write failures with fallback mechanisms.
+    
+    Attempts multiple fallback strategies when primary log fails:
+    1. Try to write to stderr (for immediate visibility)
+    2. Try to write to alternate log file
+    3. Try to write to temporary log file
+    """
+    # Strategy 1: Try to write to stderr for immediate visibility
+    try:
+        print(f"[LOG FAILURE] {error_reason}", file=sys.stderr)
+        print(f"[FAILED LOG] {log_line}", file=sys.stderr)
+        return  # Success with stderr, exit
+    except Exception as e:
+        pass  # stderr failed, continue to fallback strategies
+    
+    # Strategy 2: Try to write to alternate log file
+    try:
+        alternate_log = Path.cwd() / f"dl_series-{self.series_name}-fallback.log"
+        with open(alternate_log, 'a', encoding='utf-8', buffering=1) as f:
+            f.write(f"[PRIMARY LOG FAILED: {error_reason}]\n")
             f.write(log_line + "\n")
-        
-        # NO ECHO TO CONSOLE
+            f.flush()
+        return  # Success with fallback log, exit
+    except Exception as e:
+        pass  # Fallback log also failed, continue to final strategy
+    
+    # Strategy 3: Try to write to temp directory log file
+    try:
+        import tempfile
+        temp_dir = Path(tempfile.gettempdir())
+        temp_log = temp_dir / f"dl_series-{self.series_name}-emergency.log"
+        with open(temp_log, 'a', encoding='utf-8', buffering=1) as f:
+            f.write(f"[BOTH LOGS FAILED: {error_reason}]\n")
+            f.write(log_line + "\n")
+            f.flush()
+        return  # Success with temp log, exit
+    except Exception as e:
+        pass  # Even temp log failed
+    
+    # All strategies failed - at least attempt stderr one more time
+    try:
+        print(f"[CRITICAL] All logging strategies failed. Message lost: {log_line}", file=sys.stderr)
+    except:
+        pass  # Nothing more we can do
     
     def validate_links_file(self):
         """Validate the links file exists and has content"""
