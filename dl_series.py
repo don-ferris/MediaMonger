@@ -710,63 +710,71 @@ def download_worker(self, slot_id):
                     self.active_downloads -= 1
             
             self.download_queue.task_done()    
-    def process_downloads(self):
-        """Main download processing loop using queue"""
-        # Read initial links
-        all_lines, valid_links = self.read_links()
-        
-        if not valid_links:
-            self.log("No valid https:// links found in file")
-            return
-        
-        self.log(f"Found {len(valid_links)} valid download links")
-        self.log(f"Files will be saved to: {self.series_dir}")
-        
-        # Start display thread
-        self.display_thread = threading.Thread(target=self.display_progress)
-        self.display_thread.daemon = True
-        self.display_thread.start()
-        
-        # Wait a moment for display to initialize
-        time.sleep(0.5)
-        
-        # Add all initial links to queue
-        for link_info in valid_links:
-            self.download_queue.put(link_info)
-        
-        # Start worker threads with assigned slot IDs
-        workers = []
-        for i in range(self.max_concurrent):
-            worker = threading.Thread(target=self.download_worker, args=(i,))
-            worker.daemon = True
-            worker.start()
-            workers.append(worker)
-        
-        # Monitor for completion
-        while True:
-            # Check if all work is done
-            with self.lock:
-                if self.active_downloads == 0 and self.download_queue.empty():
-                    # Wait a bit to be sure
-                    time.sleep(3)
-                    break
-            
-            time.sleep(2)
-        
-        # Stop display thread
-        self.running = False
-        if self.display_thread:
-            self.display_thread.join(timeout=1)
-        
-        # Wait for all workers to finish
-        for worker in workers:
-            worker.join(timeout=10)
-        
-        # Final display
-        print("\033[2J\033[H", end='')
-        print("All downloads completed!")
-        self.log("All downloads processed!")
+def process_downloads(self):
+    """Main download processing loop using queue"""
+    # Read initial links
+    all_lines, valid_links = self.read_links()
     
+    if not valid_links:
+        self.log("No valid https:// links found in file")
+        return
+    
+    self.log(f"Found {len(valid_links)} valid download links")
+    self.log(f"Files will be saved to: {self.series_dir}")
+    
+    # Start display thread
+    self.display_thread = threading.Thread(target=self.display_progress)
+    self.display_thread.daemon = True
+    self.display_thread.start()
+    
+    # Wait a moment for display to initialize
+    time.sleep(0.5)
+    
+    # Add all initial links to queue
+    for link_info in valid_links:
+        self.download_queue.put(link_info)
+    
+    # Start worker threads with assigned slot IDs
+    workers = []
+    for i in range(self.max_concurrent):
+        worker = threading.Thread(target=self.download_worker, args=(i,))
+        worker.daemon = True
+        worker.start()
+        workers.append(worker)
+    
+    # Monitor for completion
+    while True:
+        # Check if all work is done
+        with self.lock:
+            if self.active_downloads == 0 and self.download_queue.empty():
+                # Wait a bit to be sure
+                time.sleep(3)
+                break
+        
+        time.sleep(2)
+    
+    # Send sentinel values to stop workers gracefully
+    # This signals each worker thread to exit its loop
+    self.log("Sending stop signals to all worker threads...")
+    for _ in range(self.max_concurrent):
+        self.download_queue.put(None)
+    
+    # Stop display thread
+    self.running = False
+    if self.display_thread:
+        self.display_thread.join(timeout=1)
+    
+    # Wait for all workers to finish gracefully
+    self.log("Waiting for worker threads to shut down...")
+    for i, worker in enumerate(workers):
+        worker.join(timeout=10)
+        if worker.is_alive():
+            self.log(f"Warning: Worker thread {i} did not shut down within timeout")
+    
+    # Final display
+    print("\033[2J\033[H", end='')
+    print("All downloads completed!")
+    self.log("All downloads processed!")    
     def run(self):
         """Run the download manager"""
         try:
