@@ -283,32 +283,41 @@ def update_line_status(self, line_number, new_status):
         self.log("Could not get expected file size")
         return None
     
-    def check_existing_file(self, decoded_filename):
-        """Check if file already exists - use DECODED filename"""
-        filepath = Path.cwd() / decoded_filename
-        
-        if not filepath.exists():
-            return False, None
-        
-        try:
-            actual_size = filepath.stat().st_size
-            return True, actual_size
-                
-        except OSError as e:
-            return False, None
-    
-def check_if_file_is_active_download(self, decoded_filename):
-    """Check if file exists and is an active download by checking size changes - use DECODED filename"""
+def check_existing_file(self, decoded_filename):
+    """Check if file already exists - use DECODED filename. Eliminates race condition by combining existence check with stat operation."""
     filepath = Path.cwd() / decoded_filename
     
-    if not filepath.exists():
-        return False, None  # File doesn't exist
+    try:
+        # Combine exists check with stat operation to eliminate race condition
+        actual_size = filepath.stat().st_size
+        # If we get here, file exists and we have its size
+        return True, actual_size
+    except FileNotFoundError:
+        # File doesn't exist
+        return False, None
+    except OSError as e:
+        # File exists but we can't stat it (permissions, deleted, etc.)
+        self.log(f"Error accessing file '{decoded_filename}': {e}")
+        return False, None
+    except Exception as e:
+        # Catch any other unexpected errors
+        self.log(f"Unexpected error checking file '{decoded_filename}': {type(e).__name__}: {e}")
+        return False, None
     
-    # Get initial size
+def check_if_file_is_active_download(self, decoded_filename):
+    """Check if file exists and is an active download by checking size changes - use DECODED filename. Eliminates race conditions."""
+    filepath = Path.cwd() / decoded_filename
+    
+    # Get initial size - combine with existence check to eliminate race condition
     try:
         size1 = filepath.stat().st_size
-    except OSError:
-        return False, None  # Can't stat file
+    except FileNotFoundError:
+        # File doesn't exist
+        return False, None
+    except OSError as e:
+        # Can't access file
+        self.log(f"Error accessing file '{decoded_filename}' on first check: {e}")
+        return False, None
     
     # Wait 2.5 seconds for first check
     time.sleep(2.5)
@@ -316,8 +325,14 @@ def check_if_file_is_active_download(self, decoded_filename):
     # Get size again
     try:
         size2 = filepath.stat().st_size
-    except OSError:
-        return False, None  # Can't stat file
+    except FileNotFoundError:
+        # File was deleted while we were checking
+        self.log(f"File '{decoded_filename}' was deleted during active download check")
+        return False, None
+    except OSError as e:
+        # Can't access file anymore
+        self.log(f"Error accessing file '{decoded_filename}' on second check: {e}")
+        return False, None
     
     if size1 != size2:
         return True, size2  # File is actively downloading
@@ -328,7 +343,13 @@ def check_if_file_is_active_download(self, decoded_filename):
     # Get size one more time
     try:
         size3 = filepath.stat().st_size
-    except OSError:
+    except FileNotFoundError:
+        # File was deleted while we were checking
+        self.log(f"File '{decoded_filename}' was deleted during active download check (second sleep)")
+        return False, None
+    except OSError as e:
+        # Can't access file anymore
+        self.log(f"Error accessing file '{decoded_filename}' on third check: {e}")
         return False, None
     
     if size2 != size3:
