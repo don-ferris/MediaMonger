@@ -896,15 +896,7 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
                 logger.info(f"REMOVING unwanted stream: {s.language} {s.codec_name}")
 
 def select_subtitle_streams(metadata: MediaMetadata) -> None:
-    """Apply subtitle selection rules.
-    
-    Rules:
-    - Keep ALL English subtitles (for accessibility)
-    - Keep ALL forced subtitles (essential for understanding)
-    - For English originals: ALWAYS remove ALL non-English, non-forced subtitles
-    - For non-English originals: Remove non-English except forced
-    - Ensure we have CC/SDH for English (download from OpenSubtitles if missing)
-    """
+    """Apply subtitle selection rules."""
     if not metadata.subtitle_streams:
         return
     
@@ -912,38 +904,35 @@ def select_subtitle_streams(metadata: MediaMetadata) -> None:
     
     logger.info(f"Subtitle selection: English original={is_english_original}")
     
-    # Keep all English subtitles
+    # Start: mark all for removal
     for sub in metadata.subtitle_streams:
-        if sub.language.lower().startswith('en'):
-            sub.flag = StreamFlag.KEEP
-            logger.debug(f"Keeping English subtitle: {sub.type.value}")
+        sub.flag = StreamFlag.REMOVE
     
-    # Keep all forced subtitles regardless of language
+    # REMOVE: Commentary subtitles (ANY language) - ALWAYS
     for sub in metadata.subtitle_streams:
-        if sub.type == SubtitleType.FORCED:
-            sub.flag = StreamFlag.KEEP
-            logger.debug(f"Keeping forced subtitle: {sub.language}")
+        if sub.type == SubtitleType.COMMENTARY:
+            sub.flag = StreamFlag.REMOVE
+            logger.info(f"REMOVING commentary subtitle: {sub.language}")
     
-    # For English originals, ALWAYS remove ALL non-English, non-forced subtitles
-    if is_english_original:
-        for sub in metadata.subtitle_streams:
-            if sub.flag == StreamFlag.KEEP:
-                continue
-            # Remove if not English AND not forced
-            if not sub.language.lower().startswith('en') and sub.type != SubtitleType.FORCED:
-                sub.flag = StreamFlag.REMOVE
-                logger.info(f"REMOVING foreign language subtitle: {sub.language} {sub.type.value}")
-    else:
-        # For non-English originals, remove non-English except forced
-        for sub in metadata.subtitle_streams:
-            if sub.flag == StreamFlag.KEEP:
-                continue
-            if sub.type == SubtitleType.FORCED:
-                # Forced subtitles are always kept
-                sub.flag = StreamFlag.KEEP
-            elif not sub.language.lower().startswith('en'):
-                sub.flag = StreamFlag.REMOVE
-                logger.debug(f"REMOVING non-English subtitle: {sub.language} {sub.type.value}")
+    # KEEP: All forced subtitles (any language) - but NOT if they're commentary
+    for sub in metadata.subtitle_streams:
+        if sub.type == SubtitleType.FORCED and sub.type != SubtitleType.COMMENTARY:
+            sub.flag = StreamFlag.KEEP
+            logger.info(f"Keeping forced subtitle: {sub.language}")
+    
+    # KEEP: All English subtitles (any type except commentary)
+    for sub in metadata.subtitle_streams:
+        if sub.language.lower().startswith('en') and sub.type != SubtitleType.COMMENTARY:
+            sub.flag = StreamFlag.KEEP
+            logger.info(f"Keeping English subtitle: {sub.type.value}")
+    
+    # REMOVE: Everything else (non-English, non-forced, non-commentary gets removed)
+    for sub in metadata.subtitle_streams:
+        if (not sub.language.lower().startswith('en') and 
+            sub.type != SubtitleType.FORCED and 
+            sub.type != SubtitleType.COMMENTARY):
+            sub.flag = StreamFlag.REMOVE
+            logger.info(f"REMOVING foreign language subtitle: {sub.language} {sub.type.value}")
     
     # Check if we have English CC/SDH
     has_english_cc = any(
@@ -953,7 +942,6 @@ def select_subtitle_streams(metadata: MediaMetadata) -> None:
         for sub in metadata.subtitle_streams
     )
     
-    # If no English CC/SDH, create a download task
     if not has_english_cc:
         new_sub = SubtitleStream(
             index=-1,
@@ -966,7 +954,6 @@ def select_subtitle_streams(metadata: MediaMetadata) -> None:
         )
         metadata.subtitle_streams.append(new_sub)
         logger.info("No English CC/SDH found, will download from OpenSubtitles")
-
 # ============================================================================
 # User Interface and Menu System
 # ============================================================================
