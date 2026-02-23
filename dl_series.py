@@ -960,10 +960,18 @@ class DownloadManager:
                         percent_diff = abs(existing_size - expected_size) / expected_size * 100
                         self.log(f"  Difference: {percent_diff:.2f}%")
                     
-                    # FILE SIZE MISMATCH - DO NOT PROCEED
-                    self.log(f"  Action: NOT downloading - size mismatch indicates incomplete or corrupted file")
-                    self.update_line_status(line_num, f"# FAILED - size mismatch (local {existing_size:,} != expected {expected_size:,})")
-                    return False, "SIZE_MISMATCH"
+                    # SIZE_MISMATCH indicates an incomplete download - use wget -c to resume
+                    self.log(f"  Action: Resuming incomplete download with wget -c")
+                    # If the partial file is in series directory, move it to cwd so wget can resume
+                    if file_location == "series directory":
+                        series_file_path = self.series_dir / decoded_filename
+                        local_partial = Path.cwd() / decoded_filename
+                        try:
+                            shutil.move(str(series_file_path), str(local_partial))
+                            self.log(f"  Moved partial file from series dir to cwd for resume")
+                        except Exception as e:
+                            self.log(f"  Warning: Could not move partial file to cwd: {e}")
+                    # Fall through to download section - wget -c will resume the partial file
             else:
                 self.log(f"Result: Could not get expected file size for comparison")
                 # Cannot verify file - do not proceed
@@ -1019,18 +1027,24 @@ class DownloadManager:
                         self.log(f"Result: FAILED - could not move to series directory")
                         return False, "MOVE_FAILED"
                 else:
-                    # Verification failed - delete the file and either retry or fail
-                    self.log(f"Result: Verification failed (size mismatch)")
-                    try:
-                        local_file.unlink()
-                        self.log(f"Deleted failed file: {local_file}")
-                    except Exception as e:
-                        self.log(f"Error deleting failed file: {e}")
-                    
-                    # Don't retry verification failures - they're not retryable
-                    self.update_line_status(line_num, f"# FAILED - ")
-                    self.log(f"Result: FAILED - verification failed (size mismatch)")
-                    return False, "VERIFICATION_FAILED"
+                    # Verification failed - size mismatch indicates incomplete download, retry with wget -c
+                    self.log(f"Result: Verification failed (size mismatch) - retry with wget -c to resume")
+                    if attempt < self.max_retries:
+                        display_name = self.format_filename_for_display(decoded_filename)
+                        self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [RETRYING {attempt}/{self.max_retries}]")
+                        self.log(f"Retry {attempt}/{self.max_retries}: Waiting {self.retry_wait_time}s before retry...")
+                        time.sleep(self.retry_wait_time)
+                        continue
+                    else:
+                        # All retries exhausted - delete incomplete file to prevent accumulation
+                        try:
+                            local_file.unlink()
+                            self.log(f"Deleted incomplete file after {self.max_retries} retries: {local_file}")
+                        except Exception as e:
+                            self.log(f"Error deleting incomplete file: {e}")
+                        self.update_line_status(line_num, f"# FAILED - verification failed (size mismatch)")
+                        self.log(f"Result: FAILED - verification failed (size mismatch) after {self.max_retries} retries")
+                        return False, "VERIFICATION_FAILED"
             else:
                 # Download failed - check if retryable
                 if self.is_retryable_failure(failure_reason):
