@@ -987,13 +987,13 @@ def handle_customize_streams(metadata: MediaMetadata):
     
     for stream in all_streams:
         if stream.selector:  # Only show streams with selectors
-            if hasattr(stream, 'width'):
+            if isinstance(stream, VideoStream):
                 # Video stream
                 print(f"  [{stream.selector}] Video: {stream.codec_name} {stream.width}x{stream.height}")
-            elif hasattr(stream, 'channels'):
+            elif isinstance(stream, AudioStream):
                 # Audio stream
                 print(f"  [{stream.selector}] Audio: {stream.codec_name} {stream.channel_layout} {stream.language}")
-            else:
+            elif isinstance(stream, SubtitleStream):
                 # Subtitle stream
                 print(f"  [{stream.selector}] Subtitle: {stream.language} {stream.type.value}")
     
@@ -1015,24 +1015,29 @@ def handle_customize_streams(metadata: MediaMetadata):
                 if stream.selector == char:
                     stream.flag = StreamFlag.KEEP
         
-        # Validate selection
-        has_video = any(s.flag == StreamFlag.KEEP and hasattr(s, 'width') for s in all_streams)
-        has_audio = any(s.flag == StreamFlag.KEEP and hasattr(s, 'channels') for s in all_streams)
+        # Validate selection using isinstance for type-safe checking
+        has_video = any(
+            isinstance(s, VideoStream) and s.flag == StreamFlag.KEEP 
+            for s in all_streams
+        )
+        has_audio = any(
+            isinstance(s, AudioStream) and s.flag == StreamFlag.KEEP 
+            for s in all_streams
+        )
         has_english_sub = any(
+            isinstance(s, SubtitleStream) and
             s.flag == StreamFlag.KEEP and 
-            not hasattr(s, 'width') and 
-            not hasattr(s, 'channels') and
             s.language.lower().startswith('en')
             for s in all_streams
         )
         has_cc_sdh = any(
+            isinstance(s, SubtitleStream) and
             s.flag == StreamFlag.KEEP and
-            not hasattr(s, 'width') and
-            not hasattr(s, 'channels') and
             s.type in [SubtitleType.CLOSED_CAPTIONS, SubtitleType.SDH, SubtitleType.HEARING_IMPAIRED]
             for s in all_streams
         )
         
+        # Validate and provide clear error messages
         if not has_video:
             print("Error: Must keep at least one video stream")
             continue
@@ -1043,11 +1048,16 @@ def handle_customize_streams(metadata: MediaMetadata):
             print("Error: Must keep at least one English subtitle")
             continue
         if not has_cc_sdh:
-            print("Error: Must keep at least one CC/SDH subtitle")
+            print("Error: Must keep at least one CC/SDH (closed captions/hearing impaired) subtitle")
             continue
         
+        logger.info(
+            f"Custom stream selection complete: "
+            f"{sum(1 for s in all_streams if isinstance(s, VideoStream) and s.flag == StreamFlag.KEEP)} video, "
+            f"{sum(1 for s in all_streams if isinstance(s, AudioStream) and s.flag == StreamFlag.KEEP)} audio, "
+            f"{sum(1 for s in all_streams if isinstance(s, SubtitleStream) and s.flag == StreamFlag.KEEP)} subtitle streams selected"
+        )
         break
-
 # ============================================================================
 # Reencoding and File Operations
 # ============================================================================
