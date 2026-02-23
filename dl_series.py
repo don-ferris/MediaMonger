@@ -53,8 +53,18 @@ class DownloadManager:
         # Track staggered starts
         self.slot_start_times = [0] * 4
         
+        # Retry configuration
+        self.max_retries = 3
+        self.retry_wait_time = 5
+        
         # Create series directory if it doesn't exist
         self.series_dir.mkdir(parents=True, exist_ok=True)
+    
+    def set_retry_config(self, max_retries, retry_wait_time):
+        """Configure retry behavior"""
+        self.max_retries = max_retries
+        self.retry_wait_time = retry_wait_time
+        self.log(f"Retry config: max_retries={max_retries}, wait_time={retry_wait_time}s")
     
     def rotate_log_file(self):
         """Rename existing log file with timestamp if it exists"""
@@ -529,7 +539,8 @@ class DownloadManager:
             return "[filename display error]"
     
     def download_with_wget(self, url, decoded_filename, slot_id):
-        """Download a file using wget with clean progress display - wget will decode filename automatically"""
+        """Download a file using wget with clean progress display - wget will decode filename automatically.
+        Returns (success, local_file, failure_reason)"""
         # Clean the URL and filename
         url = url.strip().replace('\n', ' ').replace('\r', ' ').replace('\0', '')
         url = ' '.join(url.split())
@@ -643,16 +654,33 @@ class DownloadManager:
                 
                 # Update with completion status
                 self.update_slot_status(slot_id, f"{slot_id+1}: {display_filename} [COMPLETE, {size_mb:.1f}MB]")
-                return True, filepath
+                return True, filepath, None
             else:
+                # Determine failure reason based on return code
+                if return_code == 124 or return_code == -9:
+                    failure_reason = "TIMEOUT"
+                elif return_code in [1, 2, 3, 4]:
+                    failure_reason = "NETWORK_ERROR"
+                elif return_code == 5:
+                    failure_reason = "PERMISSION_DENIED"
+                elif return_code == 6:
+                    failure_reason = "PROTOCOL_ERROR"
+                else:
+                    failure_reason = f"WGET_ERROR_{return_code}"
+                
                 self.log(f"DOWNLOAD FAILED: wget returned code {return_code} for {url}")
                 self.update_slot_status(slot_id, f"{slot_id+1}: {display_filename} [FAILED]")
-                return False, None
+                return False, None, failure_reason
                 
+        except subprocess.TimeoutExpired:
+            self.log(f"DOWNLOAD TIMEOUT for {url}")
+            self.update_slot_status(slot_id, f"{slot_id+1}: {display_filename} [TIMEOUT]")
+            return False, None, "TIMEOUT"
+            
         except Exception as e:
             self.log(f"DOWNLOAD ERROR for {url}: {str(e)}")
             self.update_slot_status(slot_id, f"{slot_id+1}: {display_filename} [ERROR]")
-            return False, None
+            return False, None, "EXCEPTION"
     
     def verify_download(self, url, local_file, expected_size):
         """Verify downloaded file size matches expected size - detailed logging"""
@@ -836,8 +864,24 @@ class DownloadManager:
             self.log(f"ERROR in _find_safe_destination: {type(e).__name__}: {e}")
             return None
     
+    def is_retryable_failure(self, failure_reason):
+        """Determine if a failure is retryable or permanent"""
+        if failure_reason is None:
+            return False
+        
+        retryable_reasons = [
+            "TIMEOUT",
+            "NETWORK_ERROR",
+            "WGET_ERROR_1",
+            "WGET_ERROR_2",
+            "WGET_ERROR_3",
+            "WGET_ERROR_4",
+        ]
+        
+        return any(reason in failure_reason for reason in retryable_reasons)
+    
     def process_download(self, line_num, url, slot_id):
-        """Process a single download"""
+        """Process a single download with retry logic"""
         # Clean the URL first
         url = url.strip().replace('\n', ' ').replace('\r', ' ').replace('\0', '')
         url = ' '.join(url.split())
@@ -951,43 +995,66 @@ class DownloadManager:
             time.sleep(15)
         # Slot 3 (index 3) starts immediately
         
-        # Start download - wget will save with decoded filename
-        completed, local_file = self.download_with_wget(url, decoded_filename, slot_id)
+        # Retry loop for download attempts
+        for attempt in range(1, self.max_retries + 1):
+            # Start download - wget will save with decoded filename
+            completed, local_file, failure_reason = self.download_with_wget(url, decoded_filename, slot_id)
+            
+            if completed and local_file:
+                # Download succeeded - verify it
+                verified, actual_size = self.verify_download(url, local_file, expected_size)
+                
+                if verified:
+                    # Move to series directory
+                    moved_file = self.move_to_series_directory(local_file, decoded_filename)
+                    
+                    if moved_file:
+                        # Mark as complete
+                        self.update_line_status(line_num, f"# COMPLETE")
+                        self.log(f"Result: SUCCESS")
+                        return True, "COMPLETE"
+                    else:
+                        # Mark as failed to move
+                        self.update_line_status(line_num, f"# FAILED - ")
+                        self.log(f"Result: FAILED - could not move to series directory")
+                        return False, "MOVE_FAILED"
+                else:
+                    # Verification failed - delete the file and either retry or fail
+                    self.log(f"Result: Verification failed (size mismatch)")
+                    try:
+                        local_file.unlink()
+                        self.log(f"Deleted failed file: {local_file}")
+                    except Exception as e:
+                        self.log(f"Error deleting failed file: {e}")
+                    
+                    # Don't retry verification failures - they're not retryable
+                    self.update_line_status(line_num, f"# FAILED - ")
+                    self.log(f"Result: FAILED - verification failed (size mismatch)")
+                    return False, "VERIFICATION_FAILED"
+            else:
+                # Download failed - check if retryable
+                if self.is_retryable_failure(failure_reason):
+                    if attempt < self.max_retries:
+                        self.log(f"Retryable failure: {failure_reason}")
+                        self.log(f"Retry {attempt}/{self.max_retries}: Waiting {self.retry_wait_time}s before retry...")
+                        display_name = self.format_filename_for_display(decoded_filename)
+                        self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [RETRYING {attempt}/{self.max_retries}]")
+                        time.sleep(self.retry_wait_time)
+                        continue
+                    else:
+                        # All retries exhausted
+                        self.update_line_status(line_num, f"# FAILED - ")
+                        self.log(f"Result: FAILED - all {self.max_retries} retries exhausted ({failure_reason})")
+                        return False, f"FAILED_AFTER_{self.max_retries}_RETRIES"
+                else:
+                    # Non-retryable error
+                    self.update_line_status(line_num, f"# FAILED - ")
+                    self.log(f"Result: FAILED - non-retryable error ({failure_reason})")
+                    return False, f"FAILED_{failure_reason}"
         
-        if not completed or not local_file:
-            # Mark as failed
-            self.update_line_status(line_num, f"# FAILED - ")
-            self.log(f"Result: FAILED - download error")
-            return False, "DOWNLOAD_FAILED"
-        
-        # Verify download
-        verified, actual_size = self.verify_download(url, local_file, expected_size)
-        
-        if not verified:
-            # Mark as failed with size mismatch
-            self.update_line_status(line_num, f"# FAILED - ")
-            self.log(f"Result: FAILED - verification failed (size mismatch)")
-            # Delete the failed file
-            try:
-                local_file.unlink()
-                self.log(f"Deleted failed file: {local_file}")
-            except Exception as e:
-                self.log(f"Error deleting failed file: {e}")
-            return False, "VERIFICATION_FAILED"
-        
-        # Move to series directory
-        moved_file = self.move_to_series_directory(local_file, decoded_filename)
-        
-        if not moved_file:
-            # Mark as failed to move
-            self.update_line_status(line_num, f"# FAILED - ")
-            self.log(f"Result: FAILED - could not move to series directory")
-            return False, "MOVE_FAILED"
-        
-        # Mark as complete
-        self.update_line_status(line_num, f"# COMPLETE")
-        self.log(f"Result: SUCCESS")
-        return True, "COMPLETE"
+        # Should not reach here
+        self.update_line_status(line_num, f"# FAILED - ")
+        return False, "FAILED"
     
     def download_worker(self, slot_id):
         """Worker thread that processes downloads from the queue. Non-daemon with proper cleanup."""
@@ -1200,34 +1267,62 @@ def main():
     """Main entry point"""
     setup_signal_handlers()
     
-    if len(sys.argv) != 2:
-        print("Usage: dl_series.py '[series name]' or dl_series.py '[series name].links'")
+    if len(sys.argv) < 2:
+        print("Usage: dl_series.py '[series name]' [--max-retries N] [--retry-wait N]")
         print("       This can be either a series name or a .links file in the")
         print("       current directory containing multiple real-debrid links")
         print("       for downloading a TV series.")
         print("\nExamples:")
-        print("  ./dl_series.py house              (looks for house.links)")
-        print("  ./dl_series.py house.links        (uses house.links directly)")
-        print("  ./dl_series.py ./path/house.links (uses full path)")
+        print("  ./dl_series.py house                           (looks for house.links)")
+        print("  ./dl_series.py house.links                     (uses house.links directly)")
+        print("  ./dl_series.py ./path/house.links              (uses full path)")
+        print("  ./dl_series.py house --max-retries 5           (5 retry attempts)")
+        print("  ./dl_series.py house --max-retries 5 --retry-wait 10 (5 retries, 10s wait)")
         print("\nDownloads will be saved to: ./series/[series_name]/")
         sys.exit(1)
     
     series_input = sys.argv[1]
+    max_retries = 3
+    retry_wait_time = 5
+    
+    # Parse optional arguments
+    i = 2
+    while i < len(sys.argv):
+        if sys.argv[i] == "--max-retries" and i + 1 < len(sys.argv):
+            try:
+                max_retries = int(sys.argv[i + 1])
+                i += 2
+            except ValueError:
+                print(f"Error: --max-retries requires an integer value")
+                sys.exit(1)
+        elif sys.argv[i] == "--retry-wait" and i + 1 < len(sys.argv):
+            try:
+                retry_wait_time = int(sys.argv[i + 1])
+                i += 2
+            except ValueError:
+                print(f"Error: --retry-wait requires an integer value")
+                sys.exit(1)
+        else:
+            print(f"Error: Unknown argument '{sys.argv[i]}'")
+            sys.exit(1)
     
     # Initialize and run download manager
     try:
         manager = DownloadManager(series_input)
+        manager.set_retry_config(max_retries, retry_wait_time)
         manager.run()
     except FileNotFoundError as e:
         print(f"Error: {e}")
-        print("\nUsage: dl_series.py '[series name]' or dl_series.py '[series name].links'")
+        print("\nUsage: dl_series.py '[series name]' [--max-retries N] [--retry-wait N]")
         print("       This can be either a series name or a .links file in the")
         print("       current directory containing multiple real-debrid links")
         print("       for downloading a TV series.")
         print("\nExamples:")
-        print("  ./dl_series.py house              (looks for house.links)")
-        print("  ./dl_series.py house.links        (uses house.links directly)")
-        print("  ./dl_series.py ./path/house.links (uses full path)")
+        print("  ./dl_series.py house                           (looks for house.links)")
+        print("  ./dl_series.py house.links                     (uses house.links directly)")
+        print("  ./dl_series.py ./path/house.links              (uses full path)")
+        print("  ./dl_series.py house --max-retries 5           (5 retry attempts)")
+        print("  ./dl_series.py house --max-retries 5 --retry-wait 10 (5 retries, 10s wait)")
         sys.exit(1)
 
 if __name__ == "__main__":
