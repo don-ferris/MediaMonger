@@ -1,0 +1,19 @@
+main()
+  ↓
+DownloadManager.run()
+  ↓
+self.process_downloads()  ← Orchestrator: Sets up queue & 4 workers
+  ├─ Starts display_thread
+  ├─ Populates download_queue with links
+  ├─ Starts 4 download_worker threads
+  └─ Waits for completion & cleanup
+       ↓
+    download_worker(slot_id)  ← Called 4 times (one per slot)
+       ├─ Loops: Gets item from queue
+       ├─ For each URL:
+       │   ↓
+       │   self.process_download(line_num, url, slot_id)  ← Handles single download
+       │   ├─ Checks for existing file
+       │   ├─ Verifies size
+       │   ├─ Retry loop with wget -c
+       │   └─ Returns (success, status)
