@@ -1,19 +1,265 @@
-main()
-  ↓
-DownloadManager.run()
-  ↓
-self.process_downloads()  ← Orchestrator: Sets up queue & 4 workers
-  ├─ Starts display_thread
-  ├─ Populates download_queue with links
-  ├─ Starts 4 download_worker threads
-  └─ Waits for completion & cleanup
-       ↓
-    download_worker(slot_id)  ← Called 4 times (one per slot)
-       ├─ Loops: Gets item from queue
-       ├─ For each URL:
-       │   ↓
-       │   self.process_download(line_num, url, slot_id)  ← Handles single download
-       │   ├─ Checks for existing file
-       │   ├─ Verifies size
-       │   ├─ Retry loop with wget -c
-       │   └─ Returns (success, status)
+═══════════════════════════════════════════════════════════════════════════════
+                    COMPLETE FUNCTION RELATIONSHIP MAP
+                         dl_series.py Script Flow
+═══════════════════════════════════════════════════════════════════════════════
+
+ENTRY POINT
+═══════════
+
+if __name__ == "__main__":
+    ↓
+main()  [Line 1280]
+  ├─ setup_signal_handlers()  [Line 21]
+  │   └─ Sets SIGINT/SIGTERM handlers to gracefully exit
+  │
+  ├─ Parse command-line arguments
+  │   ├─ series_input (required)
+  │   ├─ --max-retries (optional)
+  │   └─ --retry-wait (optional)
+  │
+  └─ DownloadManager(series_input)  [Initialize]
+      ├─ __init__(series_input)  [Line 32]
+      │   ├─ find_links_file(series_input)  [Line 83]
+      │   │   └─ Returns: Path to .links file
+      │   │
+      │   ├─ rotate_log_file()  [Line 69]
+      │   │   └─ Archives old dl_series.log with timestamp
+      │   │
+      │   ├─ series_dir.mkdir()
+      │   │   └─ Creates ./series/[series_name]/ directory
+      │   │
+      │   └─ Initialize queue, locks, and thread management
+      │
+      ├─ set_retry_config(max_retries, retry_wait_time)  [Line 63]
+      │   └─ Configures retry behavior
+      │
+      └─ run()  [Line 1241]
+          ├─ validate_links_file()  [Line 199]
+          │   └─ Checks .links file exists and has content
+          │
+          ├─ create_backup()  [Line 214]
+          │   └─ Creates .links.bak backup (one-time only)
+          │
+          ├─ process_downloads()  [Line 1136]  ← MAIN ORCHESTRATOR
+          │   ├─ read_links()  [Line 221]
+          │   │   └─ Returns: (all_lines, valid_links)
+          │   │
+          │   ├─ display_progress() thread [Line 466]  (DAEMON)
+          │   │   ├─ Runs in background, updates every 0.5s
+          │   │   ├─ format_filename_for_display(filename)  [Line 483]
+          │   │   │   └─ Sanitizes filenames for terminal display
+          │   │   └─ Loop: Print progress until self.running = False
+          │   │
+          │   ├─ Populate download_queue with valid links
+          │   │
+          │   ├─ Start 4 download_worker threads [Line 1162]  (NON-DAEMON)
+          │   │   │   (i = 0, 1, 2, 3)
+          │   │   │
+          │   │   └─ download_worker(slot_id)  [Line 1073]
+          │   │       ├─ Infinite loop until queue empty
+          │   │       ├─ download_queue.get(timeout=5)
+          │   │       │   └─ Returns: (line_num, url) or None (sentinel)
+          │   │       │
+          │   │       ├─ process_download(line_num, url, slot_id)  [Line 883]
+          │   │       │   │
+          │   │       │   ├─ extract_filename_from_url(url)  [Line 293]
+          │   │       │   │   └─ Returns: filename from URL
+          │   │       │   │
+          │   │       │   ├─ decode_filename(filename)  [Line 310]
+          │   │       │   │   └─ URL-decodes the filename
+          │   │       │   │
+          │   │       │   ├─ check_existing_file(decoded_filename)  [Line 386]
+          │   │       │   │   └─ Returns: (exists, size) or (False, None)
+          │   │       │   │
+          │   │       │   ├─ get_expected_size(url)  [Line 328]
+          │   │       │   │   ├─ Try wget --spider [Line 339]
+          │   │       │   │   ├─ Fallback: curl -I [Line 360]
+          │   │       │   │   └─ Returns: bytes or None
+          │   │       │   │
+          │   │       │   ├─ [IF PARTIAL FILE DETECTED]
+          │   │       │   │   └─ Move from series dir to cwd for resume
+          │   │       │   │
+          │   │       │   ├─ check_if_file_is_active_download(decoded_filename)  [Line 407]
+          │   │       │   │   ├─ Check size at T=0
+          │   │       │   │   ├─ Wait 2.5s
+          │   │       │   │   ├─ Check size at T=2.5
+          │   │       │   │   ├─ Wait 2.5s
+          │   │       │   │   ├─ Check size at T=5.0
+          │   │       │   │   └─ Returns: (is_active, final_size)
+          │   │       │   │
+          │   │       │   ├─ RETRY LOOP (attempt=1 to max_retries)
+          │   │       │   │   │
+          │   │       │   │   ├─ download_with_wget(url, decoded_filename, slot_id)  [Line 541]
+          │   │       │   │   │   ├─ format_filename_for_display(decoded_filename)  [Line 483]
+          │   │       │   │   │   ├─ update_slot_status(slot_id, status)  [Line 461]
+          │   │       │   │   │   │   └─ Updates display for this slot
+          │   │       │   │   │   │
+          │   │       │   │   │   ├�� subprocess.Popen(wget -c ...)  [Line 576]
+          │   │       │   │   │   │   └─ Continuous download with resume support
+          │   │       │   │   │   │
+          │   │       │   │   │   └─ Returns: (success, local_file, failure_reason)
+          │   │       │   │   │
+          │   │       │   │   ├─ verify_download(url, local_file, expected_size)  [Line 685]
+          │   │       │   │   │   ├─ Check: file.stat().st_size == expected_size
+          │   │       │   │   │   └─ Returns: (verified, actual_size)
+          │   │       │   │   │
+          │   │       │   │   ├─ [IF VERIFIED]
+          │   │       │   │   │   ├─ Check: actual_size != 0  [NEW FIX]
+          │   │       │   │   │   ├─ move_to_series_directory(local_file, decoded_filename)  [Line 719]
+          │   │       │   │   │   │   ├─ _find_safe_destination(decoded_filename)  [Line 806]
+          │   │       │   │   │   │   │   └─ Handle filename collisions (adds _{n} suffix)
+          │   │       │   │   │   │   │
+          │   │       │   │   │   │   └─ shutil.move() to series directory
+          │   │       │   │   │   │
+          │   │       │   │   │   ├─ update_line_status(line_num, "# COMPLETE")  [Line 236]
+          │   │       │   │   │   │   └─ Mark link as complete in .links file
+          │   │       │   │   │   │
+          │   │       │   │   │   └─ Return: (True, "COMPLETE")
+          │   │       │   │   │
+          │   │       │   │   ├─ [IF VERIFICATION FAILED - Size Mismatch]
+          │   │       │   │   │   ├─ [IF attempt < max_retries]
+          │   │       │   │   │   │   ├─ Sleep retry_wait_time
+          │   │       │   │   │   │   └─ continue  [RETRY with wget -c]
+          │   │       │   │   │   │
+          │   │       │   │   │   └─ [IF all retries exhausted]
+          │   │       │   │   │       ├─ local_file.unlink()  [Delete incomplete]
+          │   │       │   │   │       ├─ update_line_status(line_num, "# FAILED...")
+          │   │       │   │   │       └─ Return: (False, "VERIFICATION_FAILED")
+          │   │       │   │   │
+          │   │       │   │   ├─ [IF DOWNLOAD FAILED]
+          │   │       │   │   │   ├─ is_retryable_failure(failure_reason)  [Line 867]
+          │   │       │   │   │   │   └─ Returns: bool (check if retryable)
+          │   │       │   │   │   │
+          │   │       │   │   │   ├─ [IF retryable AND attempt < max_retries]
+          │   │       │   │   │   │   ├─ Sleep retry_wait_time
+          │   │       │   │   │   │   └─ continue  [RETRY]
+          │   │       │   │   │   │
+          │   │       │   │   │   ├─ [IF all retries exhausted]
+          │   │       │   │   │   │   ├─ update_line_status(line_num, "# FAILED...")
+          │   │       │   │   │   │   └─ Return: (False, "FAILED_AFTER_N_RETRIES")
+          │   │       │   │   │   │
+          │   │       │   │   │   └─ [IF non-retryable failure]
+          │   │       │   │   │       ├─ update_line_status(line_num, "# FAILED...")
+          │   │       │   │   │       └─ Return: (False, "FAILED_REASON")
+          │   │       │   │   │
+          │   │       │   │   └─ [END RETRY LOOP]
+          │   │       │   │
+          │   │       │   └─ Return: (success, status) to download_worker
+          │   │       │
+          │   │       ├─ Decrement active_downloads counter
+          │   │       ├─ download_queue.task_done()
+          │   │       └─ Loop for next item
+          │   │
+          │   ├─ Monitor completion (loop until 3 consecutive empty checks)
+          │   ├─ Send sentinel None values (4x) to stop all workers
+          │   ├─ Set self.running = False (stop display thread)
+          │   ├─ Join display_thread
+          │   ├─ Join all 4 worker threads (30s timeout each)
+          │   └─ Print final summary
+          │
+          └─ [IF reneps.py exists in cwd]
+              └─ subprocess.run(reneps.py, series_name)
+                  └─ Post-processing script for episode renaming
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                         UTILITY FUNCTIONS
+═══════════════════════════════════════════════════════════════════════════════
+
+LOGGING (used by all functions):
+├─ log(message, echo=False)  [Line 112]
+│   ├─ Format message with timestamp
+│   ├─ Try: Write to dl_series.log
+│   └─ Fallback strategy if write fails:
+│       ├─ _handle_log_failure(log_line, error_reason)  [Line 153]
+│       │   ├─ Try: Write to stderr
+│       │   ├─ Try: Write to fallback log
+│       │   └─ Try: Write to temp directory log
+│       └─ Continue execution even if all logging fails
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                         DATA FLOW SUMMARY
+══════════════════════════════════════════════════��════════════════════════════
+
+INPUT:  ./house.links (or house)
+        ├─ Line 0: https://...link1...
+        ├─ Line 1: https://...link2...
+        ├─ Line 2: # COMPLETE https://...link3...  (skipped)
+        ├─ Line 3: # FAILED https://...link4...    (skipped)
+        └─ ...
+
+PROCESSING:
+├─ Valid links extracted (Line 231: startswith('https://'))
+├─ Queued for 4 concurrent worker threads
+├─ Each link processed with:
+│   ├─ File existence check (current dir + series dir)
+│   ├─ Size verification (wget/curl headers)
+│   ├─ Active download detection
+│   └─ Retry loop with wget -c (resume support)
+└─ .links file updated with status prefix
+
+OUTPUT: 
+├─ ./series/house/episode1.mkv
+├─ ./series/house/episode2.mkv
+├─ ...
+├─ dl_series.log (session log)
+└─ house.links.bak (original backup)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                         THREADING MODEL
+═══════════════════════════════════════════════════════════════════════════════
+
+Main Thread (process_downloads):
+├─ [Daemon]  display_progress()
+│            └─ Updates 4 slot statuses every 0.5s (can exit anytime)
+│
+├─ [Non-Daemon] download_worker(slot_id=0)
+├─ [Non-Daemon] download_worker(slot_id=1)
+├─ [Non-Daemon] download_worker(slot_id=2)
+├─ [Non-Daemon] download_worker(slot_id=3)
+│              └─ Processes queue items sequentially (one per worker)
+│
+└─ [Main]  Monitor loop
+           └─ Waits for queue empty + active_downloads=0
+
+
+Synchronization:
+├─ self.lock (threading.Lock)
+│   └─ Protects: active_downloads counter
+│
+└─ self.slot_lock (threading.Lock)
+    └─ Protects: slot_status[] (display updates)
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                         RETRY STRATEGY
+═══════════════════════════════════════════════════════════════════════════════
+
+Conditions Triggering Retry:
+├─ Size mismatch detected (incomplete download)
+│   └─ wget -c automatically resumes partial file
+│
+├─ Network errors (codes 1, 2, 3, 4)
+│   └─ Full retry with fresh download
+│
+├─ Timeout errors (code 124 or -9)
+│   └─ Full retry with fresh download
+│
+└─ Other transient failures (WGET_ERROR_1, etc.)
+    └─ Full retry with fresh download
+
+Non-Retryable Failures:
+├─ Permission denied (code 5)
+├─ Protocol error (code 6)
+├─ Cannot verify file size (no expected size available)
+└─ Other persistent errors
+
+
+Default Retry Configuration:
+├─ max_retries = 3
+└─ retry_wait_time = 5 seconds
+
+
+═══════════════════════════════════════════════════════════════════════════════
