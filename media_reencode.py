@@ -707,11 +707,12 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
     """Apply audio selection rules based on original language.
     
     For English-original movies:
-    - Keep one English spatial audio (Dolby Atmos/DTS:X) if available
-    - Keep one English AC-3 5.1/7.1 (or stereo/mono AC-3 as fallback)
-    - Create AC-3 if no AC-3 exists but suitable source available
-    - ALWAYS remove: stereo/mono, plain DTS, AAC, FLAC, PCM, non-spatial codecs
-    - ALWAYS remove: all non-English streams
+    1. Set KEPT_AUDIO_STREAMS = 0
+    2. Mark all non-English streams for REMOVE
+    3. Find spatial audio (Atmos/DTS:X) and mark KEEP, increment counter
+    4. Find AC-3 or CREATE it, mark KEEP, increment counter
+    5. Mark all remaining streams for REMOVE
+    - Guarantee: KEPT_AUDIO_STREAMS >= 1 at end
     
     For non-English original movies:
     - Keep one original-language AC-3 (or best available)
@@ -745,87 +746,76 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
     
     if is_english_original:
         # =====================================================================
-        # ENGLISH ORIGINAL - AGGRESSIVE FILTERING
+        # ENGLISH ORIGINAL
         # =====================================================================
         
-        # STEP 1: Mark all non-English streams for removal
+        kept_audio_streams = 0
+        
+        # STEP 2: Mark all non-English streams for REMOVE
         for s in original_lang_streams + other_streams:
             s.flag = StreamFlag.REMOVE
             logger.info(f"REMOVING non-English stream: {s.language} {s.codec_name}")
         
-        # STEP 2: Mark stereo/mono English for removal
-        for s in english_streams:
-            if s.channels < 6:
-                s.flag = StreamFlag.REMOVE
-                logger.info(f"REMOVING stereo/mono English: {s.codec_name} {s.channel_layout} ({s.channels}ch)")
-        
-        # STEP 3: Mark plain DTS (not DTS:X) for removal
-        for s in english_streams:
-            if s.flag != StreamFlag.REMOVE and s.codec_name == 'dts' and s.spatial_type != 'DTS:X':
-                s.flag = StreamFlag.REMOVE
-                logger.info(f"REMOVING plain DTS English: {s.channel_layout}")
-        
-        # STEP 4: Mark unwanted codecs for removal (AAC, FLAC, PCM, etc)
-        for s in english_streams:
-            if s.flag != StreamFlag.REMOVE and s.codec_name in ['aac', 'flac', 'pcm']:
-                s.flag = StreamFlag.REMOVE
-                logger.info(f"REMOVING {s.codec_name} English: {s.channel_layout}")
-        
-        # STEP 5: Mark any other non-surround codecs for removal
-        # (anything that's not ac3, truehd, eac3, dts with spatial, or opus)
-        valid_surround_codecs = ['ac3', 'truehd', 'eac3', 'dts']
-        for s in english_streams:
-            if s.flag != StreamFlag.REMOVE:
-                is_valid = (s.codec_name in valid_surround_codecs or 
-                           s.spatial_type in ['Dolby Atmos', 'DTS:X'])
-                if not is_valid:
-                    s.flag = StreamFlag.REMOVE
-                    logger.info(f"REMOVING unsupported codec English: {s.codec_name}")
-        
-        # STEP 6: Keep one spatial audio (Atmos/DTS:X) if available
-        spatial_streams = [s for s in english_streams if s.flag != StreamFlag.REMOVE and s.spatial_type in ['Dolby Atmos', 'DTS:X']]
+        # STEP 3: Find and KEEP spatial audio (Atmos/DTS:X)
+        spatial_streams = [s for s in english_streams if s.spatial_type in ['Dolby Atmos', 'DTS:X']]
         if spatial_streams:
             spatial_streams[0].flag = StreamFlag.KEEP
+            kept_audio_streams += 1
             logger.info(f"Keeping spatial English audio: {spatial_streams[0].codec_name} {spatial_streams[0].spatial_type}")
-            # Mark other spatial streams for removal
+            # Mark other spatial streams for REMOVE
             for s in spatial_streams[1:]:
                 s.flag = StreamFlag.REMOVE
         
-        # STEP 7: Keep one AC-3 5.1/7.1 or create one
-        ac3_streams = [s for s in english_streams if s.flag != StreamFlag.REMOVE and s.codec_name == 'ac3' and s.channels >= 6]
+        # STEP 4: Find AC-3 or CREATE it
+        ac3_streams = [s for s in english_streams if s.codec_name == 'ac3' and s.channels >= 6]
         if ac3_streams:
+            # AC-3 exists: mark KEEP
             ac3_streams[0].flag = StreamFlag.KEEP
+            kept_audio_streams += 1
             logger.info(f"Keeping English AC-3: {ac3_streams[0].channel_layout}")
+            # Mark other AC-3 streams for REMOVE
             for s in ac3_streams[1:]:
                 s.flag = StreamFlag.REMOVE
         else:
-            # Need to create AC-3
-            # Priority 1: Find a 6+ channel source (before it gets marked for removal)
-            source_candidates_surround = [s for s in english_streams if s.flag != StreamFlag.REMOVE and s.channels >= 6 and s.codec_name in ['truehd', 'eac3', 'dts']]
-            
-            if source_candidates_surround:
-                source_stream = source_candidates_surround[0]
+            # AC-3 doesn't exist: need to CREATE
+            if kept_audio_streams == 1:
+                # We have a spatial stream, use it as source for AC-3
+                source_stream = [s for s in english_streams if s.flag == StreamFlag.KEEP][0]
+                channel_count = min(source_stream.channels, 6)
+                channel_layout = '5.1' if channel_count >= 6 else ('stereo' if channel_count == 2 else 'mono')
+                bit_rate = '640000' if channel_count >= 6 else ('192000' if channel_count == 2 else '96000')
+                
                 new_ac3 = AudioStream(
                     index=-1,
                     codec_name='ac3',
                     codec_long_name='ATSC A/52B (AC-3, E-AC-3)',
                     profile='',
-                    tags={'language': 'eng', 'title': 'Created AC-3 5.1'},
-                    channel_layout='5.1',
-                    channels=6,
-                    bit_rate='640000',
+                    tags={'language': 'eng', 'title': f'Created AC-3 {channel_layout}'},
+                    channel_layout=channel_layout,
+                    channels=channel_count,
+                    bit_rate=bit_rate,
                     language='eng',
                     flag=StreamFlag.CREATE
                 )
                 metadata.audio_streams.append(new_ac3)
-                logger.info(f"Creating English AC-3 5.1 from: {source_stream.codec_name} {source_stream.channel_layout}")
-            else:
-                # Priority 2: Find ANY remaining English stream with 2+ channels (even stereo)
-                source_candidates_stereo = [s for s in english_streams if s.flag != StreamFlag.REMOVE and s.channels >= 2]
+                kept_audio_streams += 1
+                logger.info(f"Creating English AC-3 {channel_layout} from spatial audio: {source_stream.codec_name}")
+            
+            elif kept_audio_streams == 0:
+                # No spatial audio: find best remaining English stream (not marked REMOVE)
+                best_source = None
+                max_channels = 0
                 
-                if source_candidates_stereo:
-                    source_stream = source_candidates_stereo[0]
-                    channel_count = min(source_stream.channels, 6)
+                for s in english_streams:
+                    if s.flag != StreamFlag.REMOVE and s.channels > max_channels:
+                        best_source = s
+                        max_channels = s.channels
+                
+                if best_source:
+                    # Mark source stream as SOURCE (for ffmpeg to use but not include)
+                    best_source.flag = StreamFlag.SOURCE
+                    
+                    channel_count = min(best_source.channels, 6)
                     channel_layout = '5.1' if channel_count >= 6 else ('stereo' if channel_count == 2 else 'mono')
                     bit_rate = '640000' if channel_count >= 6 else ('192000' if channel_count == 2 else '96000')
                     
@@ -842,14 +832,19 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
                         flag=StreamFlag.CREATE
                     )
                     metadata.audio_streams.append(new_ac3)
-                    logger.info(f"Creating English AC-3 {channel_layout} from: {source_stream.codec_name} {source_stream.channel_layout}")
-                else:
-                    logger.warning("No suitable English audio stream for AC-3 creation")
+                    kept_audio_streams += 1
+                    logger.info(f"Creating English AC-3 {channel_layout} from: {best_source.codec_name} {best_source.channel_layout}")
         
-        # STEP 8: Mark all remaining unflaged English streams for removal
+        # STEP 5: Mark all remaining unflagged English streams for REMOVE
         for s in english_streams:
-            if s.flag != StreamFlag.KEEP and s.flag != StreamFlag.REMOVE:
+            if s.flag != StreamFlag.KEEP and s.flag != StreamFlag.SOURCE and s.flag != StreamFlag.REMOVE:
                 s.flag = StreamFlag.REMOVE
+        
+        # Final validation
+        if kept_audio_streams == 0:
+            logger.error("ERROR: No audio streams marked KEEP after selection!")
+        else:
+            logger.info(f"Audio selection complete: {kept_audio_streams} stream(s) marked KEEP or CREATE")
     
     else:
         # =====================================================================
@@ -885,11 +880,18 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
             logger.info(f"Keeping English AC-3: {eng_ac3.channel_layout}")
         else:
             # Try to create English AC-3
-            source_candidates = [s for s in english_streams if s.channels >= 2]
+            best_english = None
+            max_channels = 0
             
-            if source_candidates:
-                source_stream = source_candidates[0]
-                channel_count = min(source_stream.channels, 6)
+            for s in english_streams:
+                if s.channels > max_channels:
+                    best_english = s
+                    max_channels = s.channels
+            
+            if best_english:
+                best_english.flag = StreamFlag.SOURCE
+                
+                channel_count = min(best_english.channels, 6)
                 channel_layout = '5.1' if channel_count >= 6 else ('stereo' if channel_count == 2 else 'mono')
                 bit_rate = '640000' if channel_count >= 6 else ('192000' if channel_count == 2 else '96000')
                 
@@ -906,11 +908,11 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
                     flag=StreamFlag.CREATE
                 )
                 metadata.audio_streams.append(new_ac3)
-                logger.info(f"Creating English AC-3 {channel_layout} from: {source_stream.codec_name}")
+                logger.info(f"Creating English AC-3 {channel_layout} from: {best_english.codec_name}")
         
         # STEP 3: Remove all non-kept streams
         for s in original_lang_streams + english_streams + other_streams:
-            if s.flag != StreamFlag.KEEP:
+            if s.flag != StreamFlag.KEEP and s.flag != StreamFlag.SOURCE:
                 s.flag = StreamFlag.REMOVE
 
 def select_subtitle_streams(metadata: MediaMetadata) -> None:
