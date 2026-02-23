@@ -691,10 +691,10 @@ def select_video_streams(metadata: MediaMetadata) -> None:
     # Mark best video stream
     for i, video in enumerate(metadata.video_streams):
         if i == 0:
-            # Best video stream
+            # Best video stream - mark for reencode if file is large
             if metadata.file_size_gb > 15:
                 video.flag = StreamFlag.REENCODE
-                logger.info(f"Marking video for REENCODE: {video.codec_name} {video.width}x{video.height} (file > 15GB)")
+                logger.info(f"Marking video for REENCODE: {video.codec_name} {video.width}x{video.height} (file {metadata.file_size_gb:.1f}GB > 15GB)")
             else:
                 video.flag = StreamFlag.KEEP
                 logger.info(f"Keeping video: {video.codec_name} {video.width}x{video.height}")
@@ -796,26 +796,37 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
         
         # REMOVE ALL unwanted English streams:
         # - Stereo/mono streams (< 6 channels) - ALWAYS REMOVE
-        # - Plain DTS (not DTS:X) - ALWAYS REMOVE
+        # - Plain DTS (without spatial audio) - ALWAYS REMOVE
         # - AAC, FLAC, PCM - ALWAYS REMOVE
         for s in english_streams:
             if s.flag == StreamFlag.KEEP:
                 continue
             
+            removed = False
+            
+            # Check for stereo/mono (< 6 channels)
             if s.channels < 6:
                 s.flag = StreamFlag.REMOVE
-                logger.debug(f"REMOVING stereo English: {s.codec_name} {s.channel_layout}")
-            elif s.codec_name == 'dts' and s.spatial_type != 'DTS:X':
+                logger.info(f"REMOVING stereo English: {s.codec_name} {s.channel_layout} ({s.channels} channels)")
+                removed = True
+            
+            # Check for plain DTS (not DTS:X)
+            if not removed and s.codec_name == 'dts':
+                if s.spatial_type != 'DTS:X':
+                    s.flag = StreamFlag.REMOVE
+                    logger.info(f"REMOVING plain DTS English: {s.channel_layout}")
+                    removed = True
+            
+            # Check for unwanted codecs
+            if not removed and s.codec_name in ['aac', 'flac', 'pcm']:
                 s.flag = StreamFlag.REMOVE
-                logger.debug(f"REMOVING plain DTS English: {s.channel_layout}")
-            elif s.codec_name in ['aac', 'flac', 'pcm']:
-                s.flag = StreamFlag.REMOVE
-                logger.debug(f"REMOVING {s.codec_name} English: {s.channel_layout}")
+                logger.info(f"REMOVING {s.codec_name} English: {s.channel_layout}")
+                removed = True
         
         # REMOVE ALL non-English streams for English originals
         for s in original_lang_streams + other_streams:
             s.flag = StreamFlag.REMOVE
-            logger.debug(f"REMOVING non-English stream: {s.language} {s.codec_name}")
+            logger.info(f"REMOVING non-English stream: {s.language} {s.codec_name}")
         
     else:
         # Non-English original movies
@@ -882,7 +893,7 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
         for s in english_streams + other_streams:
             if s.flag != StreamFlag.KEEP:
                 s.flag = StreamFlag.REMOVE
-                logger.debug(f"REMOVING unwanted stream: {s.language} {s.codec_name}")
+                logger.info(f"REMOVING unwanted stream: {s.language} {s.codec_name}")
 
 def select_subtitle_streams(metadata: MediaMetadata) -> None:
     """Apply subtitle selection rules.
@@ -898,6 +909,8 @@ def select_subtitle_streams(metadata: MediaMetadata) -> None:
         return
     
     is_english_original = metadata.original_language.lower().startswith('en')
+    
+    logger.info(f"Subtitle selection: English original={is_english_original}")
     
     # Keep all English subtitles
     for sub in metadata.subtitle_streams:
@@ -919,7 +932,7 @@ def select_subtitle_streams(metadata: MediaMetadata) -> None:
             # Remove if not English AND not forced
             if not sub.language.lower().startswith('en') and sub.type != SubtitleType.FORCED:
                 sub.flag = StreamFlag.REMOVE
-                logger.debug(f"REMOVING foreign language subtitle: {sub.language} {sub.type.value}")
+                logger.info(f"REMOVING foreign language subtitle: {sub.language} {sub.type.value}")
     else:
         # For non-English originals, remove non-English except forced
         for sub in metadata.subtitle_streams:
@@ -953,6 +966,7 @@ def select_subtitle_streams(metadata: MediaMetadata) -> None:
         )
         metadata.subtitle_streams.append(new_sub)
         logger.info("No English CC/SDH found, will download from OpenSubtitles")
+
 # ============================================================================
 # User Interface and Menu System
 # ============================================================================
