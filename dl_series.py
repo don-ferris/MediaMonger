@@ -252,14 +252,15 @@ def update_line_status(self, line_number, new_status):
         new_line = f"{new_status} {clean_line}"
         
         # Use fileinput for in-place editing (modifies only the target line)
+        # FIX: Use sys.stdout.write() instead of print() to prevent writing to .links file
         try:
             current_line = 0
             for line in fileinput.input(self.links_file, inplace=True):
                 line = line.rstrip('\n')
                 if current_line == line_number:
-                    print(new_line)
+                    sys.stdout.write(new_line + '\n')
                 else:
-                    print(line)
+                    sys.stdout.write(line + '\n')
                 current_line += 1
             
             self.log(f"Successfully updated line {line_number} with status: {new_status}")
