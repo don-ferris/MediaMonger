@@ -880,108 +880,112 @@ class DownloadManager:
         
         return any(reason in failure_reason for reason in retryable_reasons)
     
-    def process_download(self, line_num, url, slot_id):
-        """Process a single download with retry logic"""
-        # Clean the URL first
-        url = url.strip().replace('\n', ' ').replace('\r', ' ').replace('\0', '')
-        url = ' '.join(url.split())
+def process_download(self, line_num, url, slot_id):
+    """Process a single download with retry logic"""
+    # Clean the URL first
+    url = url.strip().replace('\n', ' ').replace('\r', ' ').replace('\0', '')
+    url = ' '.join(url.split())
+    
+    # Extract filename from URL
+    encoded_filename = self.extract_filename_from_url(url)
+    decoded_filename = self.decode_filename(encoded_filename)
+    
+    self.log(f"Processing: {url}")
+    self.log(f"  Encoded filename: {encoded_filename}")
+    self.log(f"  Decoded filename: {decoded_filename}")
+    
+    # Check if file already exists in current directory - use DECODED filename
+    file_exists, existing_size = self.check_existing_file(decoded_filename)
+    file_location = "current directory"
+    
+    # If not in current directory, check in series directory
+    if not file_exists:
+        series_file_path = self.series_dir / decoded_filename
+        try:
+            existing_size = series_file_path.stat().st_size
+            file_exists = True
+            file_location = "series directory"
+        except FileNotFoundError:
+            # File doesn't exist in series directory either
+            pass
+        except OSError as e:
+            self.log(f"Error accessing file in series directory '{decoded_filename}': {e}")
+    
+    if file_exists:
+        self.log(f"Local file exists: {decoded_filename}")
+        self.log(f"Location: {file_location}")
+        self.log(f"File size: {existing_size:,} bytes")
         
-        # Extract filename from URL
-        encoded_filename = self.extract_filename_from_url(url)
-        decoded_filename = self.decode_filename(encoded_filename)
+        # Now get expected file size for comparison
+        self.log(f"Getting expected file size for comparison...")
+        expected_size = self.get_expected_size(url)
         
-        self.log(f"Processing: {url}")
-        self.log(f"  Encoded filename: {encoded_filename}")
-        self.log(f"  Decoded filename: {decoded_filename}")
-        
-        # Check if file already exists in current directory - use DECODED filename
-        file_exists, existing_size = self.check_existing_file(decoded_filename)
-        file_location = "current directory"
-        
-        # If not in current directory, check in series directory
-        if not file_exists:
-            series_file_path = self.series_dir / decoded_filename
-            try:
-                existing_size = series_file_path.stat().st_size
-                file_exists = True
-                file_location = "series directory"
-            except FileNotFoundError:
-                # File doesn't exist in series directory either
-                pass
-            except OSError as e:
-                self.log(f"Error accessing file in series directory '{decoded_filename}': {e}")
-        
-        if file_exists:
-            self.log(f"Local file exists: {decoded_filename}")
-            self.log(f"Location: {file_location}")
-            self.log(f"File size: {existing_size:,} bytes")
+        if expected_size is not None:
+            self.log(f"Expected file size: {expected_size:,} bytes")
+            self.log(f"Test condition: local size == expected size? {existing_size == expected_size}")
             
-            # Now get expected file size for comparison
-            self.log(f"Getting expected file size for comparison...")
-            expected_size = self.get_expected_size(url)
-            
-            if expected_size is not None:
-                self.log(f"Expected file size: {expected_size:,} bytes")
-                self.log(f"Test condition: local size == expected size? {existing_size == expected_size}")
+            if existing_size == expected_size:
+                self.log(f"Result: File already exists with correct size")
                 
-                if existing_size == expected_size:
-                    self.log(f"Result: File already exists with correct size")
+                # If file is in current directory, move it to series directory
+                if file_location == "current directory":
+                    local_file = Path.cwd() / decoded_filename
+                    moved_file = self.move_to_series_directory(local_file, decoded_filename)
                     
-                    # If file is in current directory, move it to series directory
-                    if file_location == "current directory":
-                        local_file = Path.cwd() / decoded_filename
-                        moved_file = self.move_to_series_directory(local_file, decoded_filename)
-                        
-                        if moved_file:
-                            # Mark as complete
-                            self.update_line_status(line_num, f"# COMPLETE (already existed)")
-                            display_name = self.format_filename_for_display(decoded_filename)
-                            size_mb = existing_size / (1024 * 1024)
-                            self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [EXISTED, {size_mb:.1f}MB]")
-                            return True, "ALREADY_EXISTED"
-                        else:
-                            self.log(f"Result: FAILED - could not move existing file")
-                            self.update_line_status(line_num, f"# FAILED - could not move existing file")
-                            return False, "MOVE_FAILED"
-                    else:
-                        # File is already in series directory - just mark as complete
-                        self.log(f"Result: File already exists in series directory with correct size")
-                        self.update_line_status(line_num, f"# COMPLETE (already in series)")
+                    if moved_file:
+                        # Mark as complete
+                        self.update_line_status(line_num, f"# COMPLETE (already existed)")
                         display_name = self.format_filename_for_display(decoded_filename)
                         size_mb = existing_size / (1024 * 1024)
                         self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [EXISTED, {size_mb:.1f}MB]")
                         return True, "ALREADY_EXISTED"
+                    else:
+                        self.log(f"Result: FAILED - could not move existing file")
+                        self.update_line_status(line_num, f"# FAILED - could not move existing file")
+                        return False, "MOVE_FAILED"
                 else:
-                    self.log(f"Result: File exists but size mismatch ({existing_size:,} != {expected_size:,})")
-                    self.log(f"  Difference: {abs(existing_size - expected_size):,} bytes")
-                    
-                    # Calculate percentage difference for logging
-                    if expected_size > 0:
-                        percent_diff = abs(existing_size - expected_size) / expected_size * 100
-                        self.log(f"  Difference: {percent_diff:.2f}%")
-                    
-                    # SIZE_MISMATCH indicates an incomplete download - use wget -c to resume
-                    self.log(f"  Action: Resuming incomplete download with wget -c")
-                    # If the partial file is in series directory, move it to cwd so wget can resume
-                    if file_location == "series directory":
-                        series_file_path = self.series_dir / decoded_filename
-                        local_partial = Path.cwd() / decoded_filename
-                        try:
-                            shutil.move(str(series_file_path), str(local_partial))
-                            self.log(f"  Moved partial file from series dir to cwd for resume")
-                        except Exception as e:
-                            self.log(f"  Warning: Could not move partial file to cwd: {e}")
-                    # Fall through to download section - wget -c will resume the partial file
+                    # File is already in series directory - just mark as complete
+                    self.log(f"Result: File already exists in series directory with correct size")
+                    self.update_line_status(line_num, f"# COMPLETE (already in series)")
+                    display_name = self.format_filename_for_display(decoded_filename)
+                    size_mb = existing_size / (1024 * 1024)
+                    self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [EXISTED, {size_mb:.1f}MB]")
+                    return True, "ALREADY_EXISTED"
             else:
-                self.log(f"Result: Could not get expected file size for comparison")
-                # Cannot verify file - do not proceed
-                self.log(f"  Action: NOT downloading - cannot verify file completeness")
-                self.update_line_status(line_num, f"# FAILED - cannot verify file size")
-                return False, "NO_EXPECTED_SIZE"
+                self.log(f"Result: File exists but size mismatch ({existing_size:,} != {expected_size:,})")
+                self.log(f"  Difference: {abs(existing_size - expected_size):,} bytes")
+                
+                # Calculate percentage difference for logging
+                if expected_size > 0:
+                    percent_diff = abs(existing_size - expected_size) / expected_size * 100
+                    self.log(f"  Difference: {percent_diff:.2f}%")
+                
+                # SIZE_MISMATCH indicates an incomplete download - use wget -c to resume
+                self.log(f"  Action: Resuming incomplete download with wget -c")
+                # If the partial file is in series directory, move it to cwd so wget can resume
+                if file_location == "series directory":
+                    series_file_path = self.series_dir / decoded_filename
+                    local_partial = Path.cwd() / decoded_filename
+                    try:
+                        shutil.move(str(series_file_path), str(local_partial))
+                        self.log(f"  Moved partial file from series dir to cwd for resume")
+                    except Exception as e:
+                        self.log(f"  Warning: Could not move partial file to cwd: {e}")
+                # Fall through to download section - wget -c will resume the partial file
+                # Explicitly continue to the download retry loop below
         else:
-            self.log(f"No local file found: {decoded_filename}")
-        
-        # Check if file is actively downloading - use DECODED filename
+            self.log(f"Result: Could not get expected file size for comparison")
+            # Cannot verify file - do not proceed
+            self.log(f"  Action: NOT downloading - cannot verify file completeness")
+            self.update_line_status(line_num, f"# FAILED - cannot verify file size")
+            return False, "NO_EXPECTED_SIZE"
+    else:
+        self.log(f"No local file found: {decoded_filename}")
+    
+    # Check if file is actively downloading - use DECODED filename
+    # NOTE: This check is skipped if we found a partial file needing resume (file_exists=True with size mismatch)
+    if not file_exists:
+        # Only check for active downloads if file doesn't exist
         # NOTE: This now only takes ~5 seconds instead of 20 (optimized check_if_file_is_active_download)
         is_active, current_size = self.check_if_file_is_active_download(decoded_filename)
         
@@ -990,85 +994,108 @@ class DownloadManager:
             display_name = self.format_filename_for_display(decoded_filename)
             self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [ACTIVE]")
             return False, "ACTIVE"
+    
+    # Get expected size for new download
+    expected_size = self.get_expected_size(url)
+    
+    # Stagger start times to avoid thundering herd
+    if slot_id == 0:
+        time.sleep(5)
+    elif slot_id == 1:
+        time.sleep(10)
+    elif slot_id == 2:
+        time.sleep(15)
+    # Slot 3 (index 3) starts immediately
+    
+    # Retry loop for download attempts
+    for attempt in range(1, self.max_retries + 1):
+        # Start download - wget will save with decoded filename
+        completed, local_file, failure_reason = self.download_with_wget(url, decoded_filename, slot_id)
         
-        # Get expected size for new download
-        expected_size = self.get_expected_size(url)
-        
-        # Stagger start times to avoid thundering herd
-        if slot_id == 0:
-            time.sleep(5)
-        elif slot_id == 1:
-            time.sleep(10)
-        elif slot_id == 2:
-            time.sleep(15)
-        # Slot 3 (index 3) starts immediately
-        
-        # Retry loop for download attempts
-        for attempt in range(1, self.max_retries + 1):
-            # Start download - wget will save with decoded filename
-            completed, local_file, failure_reason = self.download_with_wget(url, decoded_filename, slot_id)
+        if completed and local_file:
+            # Download succeeded - verify it
+            verified, actual_size = self.verify_download(url, local_file, expected_size)
             
-            if completed and local_file:
-                # Download succeeded - verify it
-                verified, actual_size = self.verify_download(url, local_file, expected_size)
-                
-                if verified:
-                    # Move to series directory
-                    moved_file = self.move_to_series_directory(local_file, decoded_filename)
+            if verified:
+                # Extra validation: ensure file is not zero bytes
+                if actual_size == 0:
+                    self.log(f"Result: FAILED - downloaded file is zero bytes (invalid)")
+                    # Delete the zero-byte file
+                    try:
+                        local_file.unlink()
+                        self.log(f"Deleted zero-byte file: {local_file}")
+                    except Exception as e:
+                        self.log(f"Error deleting zero-byte file: {e}")
                     
-                    if moved_file:
-                        # Mark as complete
-                        self.update_line_status(line_num, f"# COMPLETE")
-                        self.log(f"Result: SUCCESS")
-                        return True, "COMPLETE"
-                    else:
-                        # Mark as failed to move
-                        self.update_line_status(line_num, f"# FAILED - ")
-                        self.log(f"Result: FAILED - could not move to series directory")
-                        return False, "MOVE_FAILED"
-                else:
-                    # Verification failed - size mismatch indicates incomplete download, retry with wget -c
-                    self.log(f"Result: Verification failed (size mismatch) - retry with wget -c to resume")
+                    # Treat as verification failure and retry
                     if attempt < self.max_retries:
                         display_name = self.format_filename_for_display(decoded_filename)
                         self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [RETRYING {attempt}/{self.max_retries}]")
                         self.log(f"Retry {attempt}/{self.max_retries}: Waiting {self.retry_wait_time}s before retry...")
-                        time.sleep(self.retry_wait_time)
-                        continue
-                    else:
-                        # All retries exhausted - delete incomplete file to prevent accumulation
-                        try:
-                            local_file.unlink()
-                            self.log(f"Deleted incomplete file after {self.max_retries} retries: {local_file}")
-                        except Exception as e:
-                            self.log(f"Error deleting incomplete file: {e}")
-                        self.update_line_status(line_num, f"# FAILED - verification failed (size mismatch)")
-                        self.log(f"Result: FAILED - verification failed (size mismatch) after {self.max_retries} retries")
-                        return False, "VERIFICATION_FAILED"
-            else:
-                # Download failed - check if retryable
-                if self.is_retryable_failure(failure_reason):
-                    if attempt < self.max_retries:
-                        self.log(f"Retryable failure: {failure_reason}")
-                        self.log(f"Retry {attempt}/{self.max_retries}: Waiting {self.retry_wait_time}s before retry...")
-                        display_name = self.format_filename_for_display(decoded_filename)
-                        self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [RETRYING {attempt}/{self.max_retries}]")
                         time.sleep(self.retry_wait_time)
                         continue
                     else:
                         # All retries exhausted
-                        self.update_line_status(line_num, f"# FAILED - ")
-                        self.log(f"Result: FAILED - all {self.max_retries} retries exhausted ({failure_reason})")
-                        return False, f"FAILED_AFTER_{self.max_retries}_RETRIES"
+                        self.update_line_status(line_num, f"# FAILED - verification failed (zero-byte file)")
+                        self.log(f"Result: FAILED - zero-byte file after {self.max_retries} retries")
+                        return False, "ZERO_BYTE_FILE"
+                
+                # File is valid - move to series directory
+                moved_file = self.move_to_series_directory(local_file, decoded_filename)
+                
+                if moved_file:
+                    # Mark as complete
+                    self.update_line_status(line_num, f"# COMPLETE")
+                    self.log(f"Result: SUCCESS")
+                    return True, "COMPLETE"
                 else:
-                    # Non-retryable error
+                    # Mark as failed to move
                     self.update_line_status(line_num, f"# FAILED - ")
-                    self.log(f"Result: FAILED - non-retryable error ({failure_reason})")
-                    return False, f"FAILED_{failure_reason}"
-        
-        # Should not reach here
-        self.update_line_status(line_num, f"# FAILED - ")
-        return False, "FAILED"
+                    self.log(f"Result: FAILED - could not move to series directory")
+                    return False, "MOVE_FAILED"
+            else:
+                # Verification failed - size mismatch indicates incomplete download, retry with wget -c
+                self.log(f"Result: Verification failed (size mismatch) - retry with wget -c to resume")
+                if attempt < self.max_retries:
+                    display_name = self.format_filename_for_display(decoded_filename)
+                    self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [RETRYING {attempt}/{self.max_retries}]")
+                    self.log(f"Retry {attempt}/{self.max_retries}: Waiting {self.retry_wait_time}s before retry...")
+                    time.sleep(self.retry_wait_time)
+                    continue
+                else:
+                    # All retries exhausted - delete incomplete file to prevent accumulation
+                    try:
+                        local_file.unlink()
+                        self.log(f"Deleted incomplete file after {self.max_retries} retries: {local_file}")
+                    except Exception as e:
+                        self.log(f"Error deleting incomplete file: {e}")
+                    self.update_line_status(line_num, f"# FAILED - verification failed (size mismatch)")
+                    self.log(f"Result: FAILED - verification failed (size mismatch) after {self.max_retries} retries")
+                    return False, "VERIFICATION_FAILED"
+        else:
+            # Download failed - check if retryable
+            if self.is_retryable_failure(failure_reason):
+                if attempt < self.max_retries:
+                    self.log(f"Retryable failure: {failure_reason}")
+                    self.log(f"Retry {attempt}/{self.max_retries}: Waiting {self.retry_wait_time}s before retry...")
+                    display_name = self.format_filename_for_display(decoded_filename)
+                    self.update_slot_status(slot_id, f"{slot_id+1}: {display_name} [RETRYING {attempt}/{self.max_retries}]")
+                    time.sleep(self.retry_wait_time)
+                    continue
+                else:
+                    # All retries exhausted
+                    self.update_line_status(line_num, f"# FAILED - ")
+                    self.log(f"Result: FAILED - all {self.max_retries} retries exhausted ({failure_reason})")
+                    return False, f"FAILED_AFTER_{self.max_retries}_RETRIES"
+            else:
+                # Non-retryable error
+                self.update_line_status(line_num, f"# FAILED - ")
+                self.log(f"Result: FAILED - non-retryable error ({failure_reason})")
+                return False, f"FAILED_{failure_reason}"
+    
+    # Should not reach here
+    self.update_line_status(line_num, f"# FAILED - ")
+    return False, "FAILED"
     
     def download_worker(self, slot_id):
         """Worker thread that processes downloads from the queue. Non-daemon with proper cleanup."""
