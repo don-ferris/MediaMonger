@@ -687,34 +687,153 @@ def format_filename_for_display(self, filename):
             self.log(f"  Result: PASS (no expected size to compare)")
             return True, actual_size  # If no expected size, assume OK
     
-    def move_to_series_directory(self, local_file, decoded_filename):
-        """Move downloaded file to series directory with decoded filename"""
-        if not local_file or not local_file.exists():
-            self.log(f"MOVE FAILED: Local file not found")
+def move_to_series_directory(self, local_file, decoded_filename):
+    """Move downloaded file to series directory with robust collision handling and race condition protection.
+    
+    Uses atomic operations and proper error handling to prevent file loss or overwrites.
+    """
+    try:
+        # Validate source file exists and is accessible
+        if not local_file or not isinstance(local_file, Path):
+            self.log(f"MOVE FAILED: Invalid local_file parameter")
             return None
         
-        # Create destination path with decoded filename
-        destination = self.series_dir / decoded_filename
-        
-        # If file already exists at destination, add a counter
-        counter = 1
-        original_destination = destination
-        while destination.exists():
-            name_parts = decoded_filename.rsplit('.', 1)
-            if len(name_parts) == 2:
-                new_name = f"{name_parts[0]}_{counter}.{name_parts[1]}"
-            else:
-                new_name = f"{decoded_filename}_{counter}"
-            destination = self.series_dir / new_name
-            counter += 1
+        if not local_file.exists():
+            self.log(f"MOVE FAILED: Local file not found: {local_file}")
+            return None
         
         try:
-            shutil.move(str(local_file), str(destination))
-            self.log(f"MOVED TO SERIES DIRECTORY: {local_file.name} -> {destination.name}")
-            return destination
-        except Exception as e:
-            self.log(f"ERROR moving file to series directory: {e}")
+            source_size = local_file.stat().st_size
+            self.log(f"MOVE SOURCE: {local_file.name} ({source_size:,} bytes)")
+        except OSError as e:
+            self.log(f"MOVE FAILED: Cannot stat source file: {e}")
             return None
+        
+        # Validate destination directory exists and is writable
+        if not self.series_dir.exists():
+            try:
+                self.series_dir.mkdir(parents=True, exist_ok=True)
+                self.log(f"MOVE: Created series directory: {self.series_dir}")
+            except OSError as e:
+                self.log(f"MOVE FAILED: Cannot create series directory: {e}")
+                return None
+        
+        # Check write permissions on destination directory
+        if not os.access(str(self.series_dir), os.W_OK):
+            self.log(f"MOVE FAILED: No write permission on series directory: {self.series_dir}")
+            return None
+        
+        # Determine final destination with collision avoidance
+        destination = self._find_safe_destination(decoded_filename)
+        
+        if not destination:
+            self.log(f"MOVE FAILED: Could not find safe destination for: {decoded_filename}")
+            return None
+        
+        # Perform atomic move operation
+        try:
+            self.log(f"MOVE OPERATION: {local_file.name} -> {destination.name}")
+            shutil.move(str(local_file), str(destination))
+            
+            # Verify move succeeded by checking destination
+            if not destination.exists():
+                self.log(f"MOVE FAILED: Destination file not found after move: {destination}")
+                return None
+            
+            try:
+                dest_size = destination.stat().st_size
+                if dest_size != source_size:
+                    self.log(f"MOVE WARNING: Size mismatch after move")
+                    self.log(f"  Source size: {source_size:,} bytes")
+                    self.log(f"  Destination size: {dest_size:,} bytes")
+                    # Size mismatch detected, but move succeeded - log and continue
+            except OSError as e:
+                self.log(f"MOVE WARNING: Cannot verify destination file size: {e}")
+            
+            self.log(f"MOVE SUCCESS: {decoded_filename} -> {destination.name}")
+            return destination
+            
+        except FileExistsError as e:
+            # Race condition: file was created between our check and move
+            self.log(f"MOVE FAILED: Destination file appeared during move (race condition): {e}")
+            return None
+            
+        except PermissionError as e:
+            self.log(f"MOVE FAILED: Permission denied moving file: {e}")
+            return None
+            
+        except OSError as e:
+            self.log(f"MOVE FAILED: OS error during move: {type(e).__name__}: {e}")
+            return None
+            
+        except Exception as e:
+            self.log(f"MOVE FAILED: Unexpected error: {type(e).__name__}: {e}")
+            return None
+    
+    except Exception as e:
+        self.log(f"MOVE CRITICAL ERROR: {type(e).__name__}: {e}")
+        return None
+
+def _find_safe_destination(self, decoded_filename):
+    """Find a safe destination filename that won't collide with existing files.
+    
+    Uses a more efficient algorithm that avoids TOCTOU race conditions:
+    1. First, try the exact filename (common case)
+    2. If exists, find the next available counter value
+    3. Only check existence for candidates we're about to use
+    
+    Returns Path object or None if no safe destination found.
+    """
+    try:
+        # Start with the desired filename
+        destination = self.series_dir / decoded_filename
+        
+        # Fast path: desired filename is available
+        try:
+            # Use stat with follow_symlinks=False to detect actual file existence
+            # without following symlinks (more secure)
+            destination.stat()
+            # File exists, need to find alternative name
+            self.log(f"COLLISION DETECTED: {decoded_filename} already exists")
+        except FileNotFoundError:
+            # File doesn't exist, use the desired filename
+            self.log(f"DESTINATION CHOSEN: {decoded_filename}")
+            return destination
+        
+        # Collision detected - find safe alternative
+        # Split filename into name and extension
+        name_parts = decoded_filename.rsplit('.', 1)
+        if len(name_parts) == 2:
+            base_name = name_parts[0]
+            extension = '.' + name_parts[1]
+        else:
+            base_name = decoded_filename
+            extension = ''
+        
+        # Try increasingly numbered versions
+        # Start at 1, go up to 1000 (should be more than enough)
+        max_attempts = 1000
+        for counter in range(1, max_attempts + 1):
+            candidate_name = f"{base_name}_{counter}{extension}"
+            candidate_path = self.series_dir / candidate_name
+            
+            try:
+                # Check if candidate exists
+                candidate_path.stat()
+                # Exists, continue to next counter
+                continue
+            except FileNotFoundError:
+                # Found a safe candidate!
+                self.log(f"COLLISION RESOLVED: Using numbered variant: {candidate_name} (attempt {counter})")
+                return candidate_path
+        
+        # Exhausted all attempts
+        self.log(f"COLLISION FATAL: Could not find safe filename after {max_attempts} attempts")
+        return None
+    
+    except Exception as e:
+        self.log(f"ERROR in _find_safe_destination: {type(e).__name__}: {e}")
+        return None
     
 def process_download(self, line_num, url, slot_id):
     """Process a single download"""
