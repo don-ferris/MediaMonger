@@ -182,7 +182,7 @@ LOGGING (used by all functions):
                          DATA FLOW SUMMARY
 ══════════════════════════════════════════════════��════════════════════════════
 
-INPUT:  ./house.links (or house)
+INPUT:  ./[series_name].links (or just [series_name])
         ├─ Line 0: https://...link1...
         ├─ Line 1: https://...link2...
         ├─ Line 2: # COMPLETE https://...link3...  (skipped)
