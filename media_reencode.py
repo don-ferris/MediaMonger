@@ -709,7 +709,7 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
                 s.flag = StreamFlag.REMOVE
         else:
             # Need to create AC-3
-            # Find a suitable source stream
+            # Find a suitable source stream with 6+ channels
             source_stream = None
             for s in english_streams:
                 if s.flag != StreamFlag.REMOVE and s.channels >= 6:
@@ -731,6 +731,11 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
                     flag=StreamFlag.CREATE
                 )
                 metadata.audio_streams.append(new_ac3)
+            else:
+                logger.warning(
+                    "No suitable English audio stream with 6+ channels found for AC-3 creation. "
+                    "Will keep existing English streams as-is."
+                )
         
         # Remove unwanted streams
         for s in english_streams:
@@ -759,6 +764,12 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
             # Keep best original language stream
             if original_lang_streams:
                 original_lang_streams[0].flag = StreamFlag.KEEP
+                logger.info(
+                    f"No original language AC-3 found. Keeping best available: "
+                    f"{original_lang_streams[0].codec_name} {original_lang_streams[0].language}"
+                )
+            else:
+                logger.warning("No original language audio streams found.")
         
         # Find English AC-3
         eng_ac3 = None
@@ -791,6 +802,11 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
                     flag=StreamFlag.CREATE
                 )
                 metadata.audio_streams.append(new_ac3)
+            else:
+                logger.warning(
+                    "No English audio stream with 2+ channels found for AC-3 creation. "
+                    "English soundtrack may not be available."
+                )
     
     # Remove all other languages
     for s in other_streams:
