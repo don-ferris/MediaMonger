@@ -340,12 +340,18 @@ def send_ntfy_notification(title: str, message: str, priority: str = "default"):
         logger.error(f"Failed to send ntfy notification: {e}")
 
 def handle_metadata_error(metadata: MediaMetadata):
-    """Handle metadata resolution errors with IMDb fallback."""
+    """Handle metadata resolution errors with IMDb fallback.
+    
+    Raises:
+        KeyboardInterrupt: If user chooses to quit (allows main() to handle cleanup)
+    """
     error_desc = "Metadata resolution error: "
     if not metadata.filename_year:
         error_desc += "No release year in filename. "
     if metadata.imdb_id == "ttUNKNOWN":
         error_desc += "No IMDb ID from OMDB."
+    
+    logger.warning(error_desc)
     
     # Perform IMDb search
     candidates = imdb_fallback_search(metadata.sanitized_title)
@@ -368,20 +374,28 @@ def handle_metadata_error(metadata: MediaMetadata):
     print("="*60)
     print(error_desc)
     print("\nIMDb Candidates found:")
-    for imdb_id, title in candidates:
-        print(f"  {imdb_id}: {title}")
+    
+    if candidates:
+        for imdb_id, title in candidates:
+            print(f"  {imdb_id}: {title}")
+    else:
+        print("  No candidates found from IMDb search")
     
     while True:
-        imdb_id = input("\nEnter IMDb ID (e.g., tt0133093) or Q to quit: ").strip()
-        if imdb_id.upper() == 'Q':
-            sys.exit(0)
-        if re.match(r'^tt[0-9]{7,8}$', imdb_id):
-            metadata.imdb_id = imdb_id
+        user_input = input("\nEnter IMDb ID (e.g., tt0133093) or Q to quit: ").strip()
+        
+        if user_input.upper() == 'Q':
+            logger.info("User cancelled metadata resolution")
+            raise KeyboardInterrupt("User chose to quit metadata resolution")
+        
+        if re.match(r'^tt[0-9]{7,8}$', user_input):
+            metadata.imdb_id = user_input
+            logger.info(f"User provided IMDb ID: {user_input}")
             
             # Retry OMDB with IMDb ID
             params = {
                 'apikey': OMDB_API_KEY,
-                'i': imdb_id,
+                'i': user_input,
                 'r': 'json'
             }
             try:
@@ -390,15 +404,28 @@ def handle_metadata_error(metadata: MediaMetadata):
                     data = response.json()
                     if data.get('Response') == 'True':
                         metadata.omdb_title, metadata.omdb_year, _, metadata.original_language = extract_omdb_fields(data)
+                        logger.info(
+                            f"Successfully retrieved metadata: {metadata.omdb_title} ({metadata.omdb_year})"
+                        )
                         print(f"Retrieved metadata: {metadata.omdb_title} ({metadata.omdb_year})")
                         return
-            except requests.RequestException:
-                pass
+                    else:
+                        logger.warning(f"OMDB returned False for IMDb ID: {user_input}")
+                else:
+                    logger.warning(f"OMDB returned status {response.status_code}")
+            except requests.RequestException as e:
+                logger.error(f"Failed to query OMDB with IMDb ID {user_input}: {e}")
             
             print("Could not retrieve metadata with IMDb ID. Using defaults.")
+            logger.warning(
+                f"Could not retrieve full metadata for {user_input}. "
+                f"Using defaults: title='{metadata.omdb_title}', year={metadata.omdb_year}"
+            )
             return
+        
         print("Invalid IMDb ID format. Must be 'tt' followed by 7-8 digits.")
-
+        logger.debug(f"User entered invalid IMDb ID format: {user_input}")
+        
 # ============================================================================
 # Media Analysis with ffprobe/MediaInfo
 # ============================================================================
