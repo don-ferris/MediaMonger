@@ -1087,7 +1087,7 @@ def build_ffmpeg_command(metadata: MediaMetadata, option: str) -> str:
             cmd.extend(["-c:a", "copy"])
         elif audio.flag == StreamFlag.CREATE:
             # Need to create AC-3 from existing stream
-            # Find source stream
+            # Find source stream with matching language
             source_stream = None
             for a in metadata.audio_streams:
                 if a.flag == StreamFlag.KEEP and a.language == audio.language:
@@ -1101,6 +1101,11 @@ def build_ffmpeg_command(metadata: MediaMetadata, option: str) -> str:
                     "-b:a", audio.bit_rate,
                     "-ac", str(audio.channels)
                 ])
+            else:
+                logger.warning(
+                    f"No source stream found for creating AC-3 audio track "
+                    f"(language: {audio.language}). Skipping creation."
+                )
     
     # Map subtitle streams
     for sub in metadata.subtitle_streams:
@@ -1120,7 +1125,6 @@ def build_ffmpeg_command(metadata: MediaMetadata, option: str) -> str:
     cmd.append(str(output_file))
     
     return " ".join(cmd)
-
 def reencode_media(metadata: MediaMetadata, option: str):
     """Execute reencoding process."""
     cmd = build_ffmpeg_command(metadata, option)
