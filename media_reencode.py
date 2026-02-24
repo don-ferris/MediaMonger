@@ -36,7 +36,7 @@ if not OMDB_API_KEY:
     sys.exit(1)
 
 # NTFY configuration
-NTFY_TOPIC = os.getenv('NTFY_TOPIC', 'heyudrf')
+NTFY_TOPIC = os.getenv('NTFY_TOPIC', 'heyyou--DonnyBahama')
 NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}"
 
 # Base directories
@@ -158,6 +158,7 @@ def find_files(search_string: str, directory: Path, recursive: bool = False) -> 
             matches.append(path)
     
     return matches
+# END find_files()
 
 def select_from_matches(matches: List[Path]) -> Optional[Path]:
     """Display menu and let user select from multiple matches."""
@@ -188,6 +189,7 @@ def select_from_matches(matches: List[Path]) -> Optional[Path]:
         if len(choice) == 1 and 'A' <= choice <= chr(65 + len(matches) - 1):
             return matches[ord(choice) - 65]
         print("Invalid choice. Please try again.")
+# END select_from_matches()
 
 def discover_file(search_string: str) -> Optional[Path]:
     """Main file discovery workflow."""
@@ -212,6 +214,7 @@ def discover_file(search_string: str) -> Optional[Path]:
         print("\nNo matching files found.")
     
     return None
+# END discover_file()
 
 # ============================================================================
 # Title Extraction and Sanitization
@@ -224,6 +227,7 @@ def extract_year(filename: str) -> Optional[int]:
     if matches:
         return int(matches[0])
     return None
+# END extract_year()
 
 def extract_raw_title(filename: str, year: Optional[int]) -> str:
     """Extract everything before the year in filename."""
@@ -234,6 +238,7 @@ def extract_raw_title(filename: str, year: Optional[int]) -> str:
             return parts[0].strip()
     # If no year or split failed, return filename without extension
     return Path(filename).stem
+# END extract_raw_title()
 
 def sanitize_title(raw_title: str) -> str:
     """Apply all sanitization transformations."""
@@ -256,6 +261,7 @@ def sanitize_title(raw_title: str) -> str:
     title = re.sub(r'\s+', ' ', title)
     
     return title
+# END sanitize_title()
 
 # ============================================================================
 # OMDB Lookup
@@ -277,6 +283,7 @@ def query_omdb(title: str, year: Optional[int]) -> Dict[str, Any]:
     except requests.RequestException as e:
         logger.error(f"OMDB query failed: {e}")
         return {}
+# END query_omdb()
 
 def extract_omdb_fields(data: Dict) -> Tuple[str, int, str, str]:
     """Extract fields from OMDB response."""
@@ -290,7 +297,7 @@ def extract_omdb_fields(data: Dict) -> Tuple[str, int, str, str]:
         language = language.split(',')[0].strip()
     
     return title, year, imdb_id, language
-
+# END extract_omdb_fields()
 def imdb_fallback_search(sanitized_title: str) -> List[Tuple[str, str]]:
     """Fallback to IMDb search when OMDB fails."""
     # Convert title for URL
@@ -323,6 +330,7 @@ def imdb_fallback_search(sanitized_title: str) -> List[Tuple[str, str]]:
     except requests.RequestException as e:
         logger.error(f"IMDb fallback search failed: {e}")
         return []
+# END imdb_fallback_search()
 
 def send_ntfy_notification(title: str, message: str, priority: str = "default"):
     """Send notification via ntfy."""
@@ -338,6 +346,7 @@ def send_ntfy_notification(title: str, message: str, priority: str = "default"):
         )
     except requests.RequestException as e:
         logger.error(f"Failed to send ntfy notification: {e}")
+# END send_ntfy_notification()
 
 def handle_metadata_error(metadata: MediaMetadata):
     """Handle metadata resolution errors with IMDb fallback.
@@ -425,7 +434,8 @@ def handle_metadata_error(metadata: MediaMetadata):
         
         print("Invalid IMDb ID format. Must be 'tt' followed by 7-8 digits.")
         logger.debug(f"User entered invalid IMDb ID format: {user_input}")
-        
+# END handle_metadata_error()
+
 # ============================================================================
 # Media Analysis with ffprobe/MediaInfo
 # ============================================================================
@@ -447,6 +457,7 @@ def run_ffprobe(filepath: Path) -> Dict[str, Any]:
     except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
         logger.error(f"ffprobe failed: {e}")
         return {}
+# END run_ffprobe()
 
 def detect_dynamic_range(stream: Dict) -> DynamicRange:
     """Detect HDR type from video stream."""
@@ -470,6 +481,7 @@ def detect_dynamic_range(stream: Dict) -> DynamicRange:
         return DynamicRange.HDR10
     
     return DynamicRange.SDR
+# END detect_dynamic_range()
 
 def detect_spatial_audio(audio_stream: Dict, filepath: Path) -> Tuple[Optional[str], Optional[SpatialAudioConfidence]]:
     """Detect spatial audio formats with confidence scoring."""
@@ -523,6 +535,7 @@ def detect_spatial_audio(audio_stream: Dict, filepath: Path) -> Tuple[Optional[s
         return 'Other Spatial', SpatialAudioConfidence.LOW
     
     return None, None
+# END detect_spatial_audio()
 
 def detect_subtitle_type(sub_stream: Dict) -> SubtitleType:
     """Determine subtitle type from stream metadata."""
@@ -551,6 +564,7 @@ def detect_subtitle_type(sub_stream: Dict) -> SubtitleType:
         return SubtitleType.DEFAULT
     
     return SubtitleType.OTHER
+# END detect_subtitle_type()
 
 def analyze_media(filepath: Path) -> MediaMetadata:
     """Main media analysis function."""
@@ -646,6 +660,7 @@ def analyze_media(filepath: Path) -> MediaMetadata:
             metadata.subtitle_streams.append(subtitle_stream)
     
     return metadata
+# END analyze_media()
 
 # ============================================================================
 # Stream Selection Rules
@@ -702,17 +717,18 @@ def select_video_streams(metadata: MediaMetadata) -> None:
             # Remove duplicate video streams
             video.flag = StreamFlag.REMOVE
             logger.debug(f"Removing duplicate video stream: {video.codec_name} {video.width}x{video.height}")
+# END select_video_streams()
 
 def select_audio_streams(metadata: MediaMetadata) -> None:
     """Apply audio selection rules based on original language.
     
     For English-original movies:
-    1. Set KEPT_AUDIO_STREAMS = 0
-    2. Mark all non-English streams for REMOVE
-    3. Find spatial audio (Atmos/DTS:X) and mark KEEP, increment counter
-    4. Find AC-3 or CREATE it, mark KEEP, increment counter
-    5. Mark all remaining streams for REMOVE
-    - Guarantee: KEPT_AUDIO_STREAMS >= 1 at end
+    1. Set GOT_SPATIAL = 0, GOT_AC3 = 0, AC3_SOURCE = 0
+    2. Flag all non-English streams as REMOVE
+    3. If AC-3 exists, flag as KEEP, set GOT_AC3 = 1
+    4. If spatial audio exists, flag as KEEP, set GOT_SPATIAL = stream_index
+    5. If no spatial audio but capable stream exists, flag as KEEP, set GOT_SPATIAL = stream_index
+    6-9. Logic tree to handle all cases, create AC-3 if needed
     
     For non-English original movies:
     - Keep one original-language AC-3 (or best available)
@@ -749,39 +765,106 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
         # ENGLISH ORIGINAL
         # =====================================================================
         
-        kept_audio_streams = 0
+        got_spatial = 0
+        got_ac3 = 0
+        ac3_source = 0
         
-        # STEP 2: Mark all non-English streams for REMOVE
+        # STEP 2: Flag all non-English streams as REMOVE
         for s in original_lang_streams + other_streams:
             s.flag = StreamFlag.REMOVE
             logger.info(f"REMOVING non-English stream: {s.language} {s.codec_name}")
         
-        # STEP 3: Find and KEEP spatial audio (Atmos/DTS:X)
-        spatial_streams = [s for s in english_streams if s.spatial_type in ['Dolby Atmos', 'DTS:X']]
-        if spatial_streams:
-            spatial_streams[0].flag = StreamFlag.KEEP
-            kept_audio_streams += 1
-            logger.info(f"Keeping spatial English audio: {spatial_streams[0].codec_name} {spatial_streams[0].spatial_type}")
-            # Mark other spatial streams for REMOVE
-            for s in spatial_streams[1:]:
-                s.flag = StreamFlag.REMOVE
+        # STEP 3: If AC-3 exists with 6+ channels, flag as KEEP
+        for s in english_streams:
+            if s.codec_name == 'ac3' and s.channels >= 6:
+                s.flag = StreamFlag.KEEP
+                got_ac3 = 1
+                logger.info(f"Keeping English AC-3: {s.channel_layout}")
+                break
         
-        # STEP 4: Find AC-3 or CREATE it
-        ac3_streams = [s for s in english_streams if s.codec_name == 'ac3' and s.channels >= 6]
-        if ac3_streams:
-            # AC-3 exists: mark KEEP
-            ac3_streams[0].flag = StreamFlag.KEEP
-            kept_audio_streams += 1
-            logger.info(f"Keeping English AC-3: {ac3_streams[0].channel_layout}")
-            # Mark other AC-3 streams for REMOVE
-            for s in ac3_streams[1:]:
-                s.flag = StreamFlag.REMOVE
-        else:
-            # AC-3 doesn't exist: need to CREATE
-            if kept_audio_streams == 1:
-                # We have a spatial stream, use it as source for AC-3
-                source_stream = [s for s in english_streams if s.flag == StreamFlag.KEEP][0]
-                channel_count = min(source_stream.channels, 6)
+        # STEP 4: If spatial audio exists, flag as KEEP
+        if got_ac3 == 0 or True:  # Check spatial regardless of AC-3
+            for s in english_streams:
+                if s.spatial_type in ['Dolby Atmos', 'DTS:X']:
+                    s.flag = StreamFlag.KEEP
+                    got_spatial = s.index
+                    logger.info(f"Keeping spatial English audio: {s.codec_name} {s.spatial_type}")
+                    break
+        
+        # STEP 5: If no spatial audio, find capable stream (6+ channels, surround codec)
+        if got_spatial == 0:
+            valid_surround_codecs = ['truehd', 'eac3', 'dts']
+            for s in english_streams:
+                if s.flag != StreamFlag.KEEP and s.channels >= 6 and s.codec_name in valid_surround_codecs:
+                    s.flag = StreamFlag.KEEP
+                    got_spatial = s.index
+                    logger.info(f"Keeping capable surround stream: {s.codec_name} {s.channel_layout}")
+                    break
+        
+        # STEP 6: If GOT_AC3 = 1 AND GOT_SPATIAL >= 1
+        if got_ac3 == 1 and got_spatial >= 1:
+            logger.info("Found both AC-3 and spatial audio, removing all other streams")
+            for s in english_streams:
+                if s.flag != StreamFlag.KEEP:
+                    s.flag = StreamFlag.REMOVE
+            return
+        
+        # STEP 7: If GOT_AC3 = 1 AND GOT_SPATIAL = 0
+        if got_ac3 == 1 and got_spatial == 0:
+            logger.info("Found AC-3 but no spatial audio, removing all other streams")
+            for s in english_streams:
+                if s.flag != StreamFlag.KEEP:
+                    s.flag = StreamFlag.REMOVE
+            return
+        
+        # STEP 8: If GOT_AC3 = 0 AND GOT_SPATIAL >= 1
+        if got_ac3 == 0 and got_spatial >= 1:
+            ac3_source = got_spatial
+            logger.info(f"No AC-3 found, will create from spatial stream {got_spatial}")
+            # Create AC-3 stream
+            spatial_stream = [s for s in english_streams if s.index == got_spatial][0]
+            channel_count = min(spatial_stream.channels, 6)
+            channel_layout = '5.1' if channel_count >= 6 else ('stereo' if channel_count == 2 else 'mono')
+            bit_rate = '640000' if channel_count >= 6 else ('192000' if channel_count == 2 else '96000')
+            
+            new_ac3 = AudioStream(
+                index=-1,
+                codec_name='ac3',
+                codec_long_name='ATSC A/52B (AC-3, E-AC-3)',
+                profile='',
+                tags={'language': 'eng', 'title': f'Created AC-3 {channel_layout}'},
+                channel_layout=channel_layout,
+                channels=channel_count,
+                bit_rate=bit_rate,
+                language='eng',
+                flag=StreamFlag.CREATE
+            )
+            metadata.audio_streams.append(new_ac3)
+            logger.info(f"Creating English AC-3 {channel_layout} from spatial stream {got_spatial}")
+            
+            for s in english_streams:
+                if s.flag != StreamFlag.KEEP:
+                    s.flag = StreamFlag.REMOVE
+            return
+        
+        # STEP 9: If GOT_AC3 = 0 AND GOT_SPATIAL = 0
+        if got_ac3 == 0 and got_spatial == 0:
+            logger.info("No AC-3 and no spatial audio, finding best stream for AC-3 creation")
+            # Find stream with highest channel count (lowest index if tied)
+            best_source = None
+            max_channels = 0
+            
+            for s in english_streams:
+                if s.channels > max_channels:
+                    best_source = s
+                    max_channels = s.channels
+            
+            if best_source:
+                ac3_source = best_source.index
+                best_source.flag = StreamFlag.SOURCE
+                logger.info(f"Using stream {best_source.index} as AC-3 source: {best_source.codec_name} {best_source.channel_layout}")
+                
+                channel_count = min(best_source.channels, 6)
                 channel_layout = '5.1' if channel_count >= 6 else ('stereo' if channel_count == 2 else 'mono')
                 bit_rate = '640000' if channel_count >= 6 else ('192000' if channel_count == 2 else '96000')
                 
@@ -798,53 +881,12 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
                     flag=StreamFlag.CREATE
                 )
                 metadata.audio_streams.append(new_ac3)
-                kept_audio_streams += 1
-                logger.info(f"Creating English AC-3 {channel_layout} from spatial audio: {source_stream.codec_name}")
+                logger.info(f"Creating English AC-3 {channel_layout} from stream {ac3_source}")
             
-            elif kept_audio_streams == 0:
-                # No spatial audio: find best remaining English stream (not marked REMOVE)
-                best_source = None
-                max_channels = 0
-                
-                for s in english_streams:
-                    if s.flag != StreamFlag.REMOVE and s.channels > max_channels:
-                        best_source = s
-                        max_channels = s.channels
-                
-                if best_source:
-                    # Mark source stream as SOURCE (for ffmpeg to use but not include)
-                    best_source.flag = StreamFlag.SOURCE
-                    
-                    channel_count = min(best_source.channels, 6)
-                    channel_layout = '5.1' if channel_count >= 6 else ('stereo' if channel_count == 2 else 'mono')
-                    bit_rate = '640000' if channel_count >= 6 else ('192000' if channel_count == 2 else '96000')
-                    
-                    new_ac3 = AudioStream(
-                        index=-1,
-                        codec_name='ac3',
-                        codec_long_name='ATSC A/52B (AC-3, E-AC-3)',
-                        profile='',
-                        tags={'language': 'eng', 'title': f'Created AC-3 {channel_layout}'},
-                        channel_layout=channel_layout,
-                        channels=channel_count,
-                        bit_rate=bit_rate,
-                        language='eng',
-                        flag=StreamFlag.CREATE
-                    )
-                    metadata.audio_streams.append(new_ac3)
-                    kept_audio_streams += 1
-                    logger.info(f"Creating English AC-3 {channel_layout} from: {best_source.codec_name} {best_source.channel_layout}")
-        
-        # STEP 5: Mark all remaining unflagged English streams for REMOVE
-        for s in english_streams:
-            if s.flag != StreamFlag.KEEP and s.flag != StreamFlag.SOURCE and s.flag != StreamFlag.REMOVE:
-                s.flag = StreamFlag.REMOVE
-        
-        # Final validation
-        if kept_audio_streams == 0:
-            logger.error("ERROR: No audio streams marked KEEP after selection!")
-        else:
-            logger.info(f"Audio selection complete: {kept_audio_streams} stream(s) marked KEEP or CREATE")
+            for s in english_streams:
+                if s.flag != StreamFlag.KEEP and s.flag != StreamFlag.SOURCE:
+                    s.flag = StreamFlag.REMOVE
+            return
     
     else:
         # =====================================================================
@@ -914,6 +956,7 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
         for s in original_lang_streams + english_streams + other_streams:
             if s.flag != StreamFlag.KEEP and s.flag != StreamFlag.SOURCE:
                 s.flag = StreamFlag.REMOVE
+# END select_audio_streams()
 
 def select_subtitle_streams(metadata: MediaMetadata) -> None:
     """Apply subtitle selection rules.
@@ -982,6 +1025,8 @@ def select_subtitle_streams(metadata: MediaMetadata) -> None:
         )
         metadata.subtitle_streams.append(new_sub)
         logger.info("No English CC/SDH found, will download from OpenSubtitles")
+# END select_subtitle_streams()
+
 # ============================================================================
 # User Interface and Menu System
 # ============================================================================
@@ -998,6 +1043,7 @@ def assign_selectors(metadata: MediaMetadata):
     
     for i, stream in enumerate(selectable_streams):
         stream.selector = chr(65 + i)
+# END assign_selectors()
 
 def display_metadata_report(metadata: MediaMetadata):
     """Display comprehensive metadata report."""
@@ -1055,6 +1101,7 @@ def display_metadata_report(metadata: MediaMetadata):
     download_needed = any(sub.flag == StreamFlag.DOWNLOAD for sub in metadata.subtitle_streams)
     if download_needed:
         print("\n  DOWNLOAD: English CC/SDH subtitles from OpenSubtitles")
+# END display_metadata_report()
 
 def build_action_menu(metadata: MediaMetadata) -> Dict[str, str]:
     """Build dynamic action menu based on file size and stream requirements."""
@@ -1090,6 +1137,8 @@ def build_action_menu(metadata: MediaMetadata) -> Dict[str, str]:
     menu['Q'] = "Quit"
     
     return menu
+# END build_action_menu()
+
 def display_action_menu(menu: Dict[str, str]):
     """Display action menu to user."""
     print("\n" + "="*80)
@@ -1098,6 +1147,7 @@ def display_action_menu(menu: Dict[str, str]):
     
     for key, description in menu.items():
         print(f"[{key}] {description}")
+# END display_action_menu()
 
 def handle_customize_streams(metadata: MediaMetadata):
     """Handle Option C - Custom stream selection."""
@@ -1188,6 +1238,8 @@ def handle_customize_streams(metadata: MediaMetadata):
             f"{sum(1 for s in all_streams if isinstance(s, SubtitleStream) and s.flag == StreamFlag.KEEP)} subtitle streams selected"
         )
         break
+# END handle_customize_streams()
+
 # ============================================================================
 # Reencoding and File Operations
 # ============================================================================
@@ -1216,6 +1268,7 @@ def generate_new_filename(metadata: MediaMetadata) -> str:
     new_name = f"{clean_title}.({metadata.omdb_year}).{metadata.imdb_id}.{resolution}{ext}"
     
     return new_name
+# END generate_new_filename()
 
 def build_ffmpeg_command(metadata: MediaMetadata, option: str) -> str:
     """Build ffmpeg command based on selected option."""
@@ -1281,6 +1334,8 @@ def build_ffmpeg_command(metadata: MediaMetadata, option: str) -> str:
     cmd.append(str(output_file))
     
     return " ".join(cmd)
+# END build_ffmpeg_command()
+
 def reencode_media(metadata: MediaMetadata, option: str):
     """Execute reencoding process."""
     cmd = build_ffmpeg_command(metadata, option)
@@ -1362,6 +1417,7 @@ def reencode_media(metadata: MediaMetadata, option: str):
             f"Reencode failed for {metadata.filename.name}\nError: {e}",
             "high"
         )
+# END reencode_media()
 
 def rename_and_move_file(metadata: MediaMetadata):
     """Handle Option R - Rename and move file."""
@@ -1413,6 +1469,7 @@ def rename_and_move_file(metadata: MediaMetadata):
             f"Failed to rename/move {metadata.filename}\nError: {e}",
             "high"
         )
+# END rename_and_move_file()
 
 # ============================================================================
 # Logging System
@@ -1454,6 +1511,7 @@ def setup_logging():
     logger.addHandler(temp_handler)
     
     return temp_log
+# END setup_logging())
 
 def cleanup_logging(temp_log: Path):
     """Prepend temp log to main log and clean up."""
@@ -1480,6 +1538,7 @@ def cleanup_logging(temp_log: Path):
             
     except Exception as e:
         print(f"Warning: Failed to clean up logs: {e}")
+# END cleanup_logging()
 
 # ============================================================================
 # Main Function
@@ -1572,6 +1631,7 @@ def main():
     finally:
         # Cleanup logging
         cleanup_logging(temp_log)
+# END main()
 
 if __name__ == "__main__":
     main()
