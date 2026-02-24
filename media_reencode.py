@@ -1282,9 +1282,9 @@ def build_ffmpeg_command(metadata: MediaMetadata, option: str) -> str:
     
     # Map video stream
     for video in metadata.video_streams:
-        if video.flag == StreamFlag.KEEP:
+        if video.flag == StreamFlag.REENCODE or video.flag == StreamFlag.KEEP:
             cmd.extend(["-map", f"0:{video.index}"])
-            if option in ['V', 'B']:
+            if video.flag == StreamFlag.REENCODE or option in ['V', 'B']:
                 # Add video encoding parameters
                 cmd.extend([
                     "-c:v", "libx265",
@@ -1295,32 +1295,20 @@ def build_ffmpeg_command(metadata: MediaMetadata, option: str) -> str:
             else:
                 cmd.extend(["-c:v", "copy"])
     
-    # Map audio streams
+    # Map audio streams - KEEP streams get copied, SOURCE streams are transcoded to CREATE streams
     for audio in metadata.audio_streams:
         if audio.flag == StreamFlag.KEEP:
             cmd.extend(["-map", f"0:{audio.index}"])
             cmd.extend(["-c:a", "copy"])
-        elif audio.flag == StreamFlag.CREATE:
-            # Need to create AC-3 from existing stream
-            # Find source stream with matching language
-            source_stream = None
-            for a in metadata.audio_streams:
-                if a.flag == StreamFlag.KEEP and a.language == audio.language:
-                    source_stream = a
-                    break
-            
-            if source_stream:
-                cmd.extend(["-map", f"0:{source_stream.index}"])
-                cmd.extend([
-                    "-c:a", "ac3",
-                    "-b:a", audio.bit_rate,
-                    "-ac", str(audio.channels)
-                ])
-            else:
-                logger.warning(
-                    f"No source stream found for creating AC-3 audio track "
-                    f"(language: {audio.language}). Skipping creation."
-                )
+        elif audio.flag == StreamFlag.SOURCE:
+            # This stream is the source for AC-3 creation - transcode it
+            cmd.extend(["-map", f"0:{audio.index}"])
+            cmd.extend([
+                "-c:a", "ac3",
+                "-b:a", audio.bit_rate,
+                "-ac", str(audio.channels)
+            ])
+            logger.info(f"Creating AC-3 from SOURCE stream {audio.index}: {audio.codec_name} {audio.channel_layout}")
     
     # Map subtitle streams
     for sub in metadata.subtitle_streams:
