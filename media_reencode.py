@@ -112,7 +112,7 @@ class VideoStream:
     bit_rate: str
     dynamic_range: DynamicRange = DynamicRange.SDR
     bit_depth: int = 8
-    flag: StreamFlag = StreamFlag.KEEP
+    flag: StreamFlag = StreamFlag.UNPROCESSED  # FIXED
     selector: str = ""
 
 @dataclass
@@ -123,7 +123,7 @@ class SubtitleStream:
     language: str
     type: SubtitleType
     tags: Dict[str, str]
-    flag: StreamFlag = StreamFlag.KEEP
+    flag: StreamFlag = StreamFlag.UNPROCESSED  # FIXED
     selector: str = ""
 
 @dataclass
@@ -341,13 +341,14 @@ def send_ntfy_notification(title: str, message: str, priority: str = "default"):
             NTFY_URL,
             data=message.encode('utf-8'),
             headers={
-                'Title': title.encode('utf-8'),
+                'Title': title,  # FIXED - don't encode
                 'Priority': priority
             },
             timeout=5
         )
     except requests.RequestException as e:
         logger.error(f"Failed to send ntfy notification: {e}")
+
 # END send_ntfy_notification()
 
 def handle_metadata_error(metadata: MediaMetadata):
@@ -1044,8 +1045,8 @@ def assign_selectors(metadata: MediaMetadata):
     all_streams.extend(metadata.audio_streams)
     all_streams.extend(metadata.subtitle_streams)
     
-    # Filter out CREATE/DOWNLOAD streams (they don't get selectors)
-    selectable_streams = [s for s in all_streams if s.flag not in [StreamFlag.CREATE, StreamFlag.DOWNLOAD]]
+    # Filter out CREATE/DOWNLOAD/SOURCE streams (they don't get selectors)
+    selectable_streams = [s for s in all_streams if s.flag not in [StreamFlag.CREATE, StreamFlag.DOWNLOAD, StreamFlag.SOURCE]]  # FIXED
     
     for i, stream in enumerate(selectable_streams):
         stream.selector = chr(65 + i)
