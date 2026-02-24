@@ -83,6 +83,7 @@ class StreamFlag(Enum):
     CREATE = "CREATE"
     REENCODE = "REENCODE"
     DOWNLOAD = "DOWNLOAD"
+    SOURCE = "SOURCE"
 
 @dataclass
 class AudioStream:
