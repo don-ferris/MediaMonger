@@ -78,6 +78,7 @@ class SubtitleType(Enum):
     OTHER = "Other"
 
 class StreamFlag(Enum):
+    UNPROCESSED = "UNPROCESSED"
     KEEP = "KEEP"
     REMOVE = "REMOVE"
     CREATE = "CREATE"
@@ -98,7 +99,7 @@ class AudioStream:
     language: str
     spatial_type: Optional[str] = None
     spatial_confidence: Optional[SpatialAudioConfidence] = None
-    flag: StreamFlag = StreamFlag.KEEP
+    flag: StreamFlag = StreamFlag.UNPROCESSED
     selector: str = ""
 
 @dataclass
@@ -724,12 +725,12 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
     """Apply audio selection rules based on original language.
     
     For English-original movies:
-    1. Set GOT_SPATIAL = 0, GOT_AC3 = 0, AC3_SOURCE = 0
+    1. Set GOT_SPATIAL = 0, GOT_AC3 = 0
     2. Flag all non-English streams as REMOVE
     3. If AC-3 exists, flag as KEEP, set GOT_AC3 = 1
     4. If spatial audio exists, flag as KEEP, set GOT_SPATIAL = stream_index
-    5. If no spatial audio but capable stream exists, flag as KEEP, set GOT_SPATIAL = stream_index
-    6-9. Logic tree to handle all cases, create AC-3 if needed
+    5. If no spatial audio but CAPABLE stream exists, flag as KEEP, set GOT_SPATIAL = stream_index
+    6-10. Logic tree determines remaining flags, create AC-3 if needed
     
     For non-English original movies:
     - Keep one original-language AC-3 (or best available)
@@ -768,60 +769,58 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
         
         got_spatial = 0
         got_ac3 = 0
-        ac3_source = 0
         
         # STEP 2: Flag all non-English streams as REMOVE
         for s in original_lang_streams + other_streams:
             s.flag = StreamFlag.REMOVE
             logger.info(f"REMOVING non-English stream: {s.language} {s.codec_name}")
         
-        # STEP 3: If AC-3 exists with 6+ channels, flag as KEEP
+        # STEP 3: If AC-3 exists, flag as KEEP
         for s in english_streams:
-            if s.codec_name == 'ac3' and s.channels >= 6:
+            if s.codec_name == 'ac3':
                 s.flag = StreamFlag.KEEP
                 got_ac3 = 1
                 logger.info(f"Keeping English AC-3: {s.channel_layout}")
                 break
         
-        # STEP 4: If spatial audio exists, flag as KEEP
-        if got_ac3 == 0 or True:  # Check spatial regardless of AC-3
-            for s in english_streams:
-                if s.spatial_type in ['Dolby Atmos', 'DTS:X']:
-                    s.flag = StreamFlag.KEEP
-                    got_spatial = s.index
-                    logger.info(f"Keeping spatial English audio: {s.codec_name} {s.spatial_type}")
-                    break
+        # STEP 4: If spatial audio exists (Atmos or DTS:X), flag as KEEP
+        for s in english_streams:
+            if s.spatial_type in ['Dolby Atmos', 'DTS:X']:
+                s.flag = StreamFlag.KEEP
+                got_spatial = s.index
+                logger.info(f"Keeping spatial English audio: {s.codec_name} {s.spatial_type}")
+                break
         
-        # STEP 5: If no spatial audio, find capable stream (6+ channels, surround codec)
+        # STEP 5: If no spatial audio, find stream CAPABLE of spatial audio
         if got_spatial == 0:
-            valid_surround_codecs = ['truehd', 'eac3', 'dts']
+            spatial_capable_codecs = ['truehd', 'eac3']
+            
             for s in english_streams:
-                if s.flag != StreamFlag.KEEP and s.channels >= 6 and s.codec_name in valid_surround_codecs:
+                if s.flag == StreamFlag.UNPROCESSED and s.codec_name in spatial_capable_codecs:
                     s.flag = StreamFlag.KEEP
                     got_spatial = s.index
-                    logger.info(f"Keeping capable surround stream: {s.codec_name} {s.channel_layout}")
+                    logger.info(f"Keeping spatial-capable stream: {s.codec_name} {s.channel_layout}")
                     break
         
         # STEP 6: If GOT_AC3 = 1 AND GOT_SPATIAL >= 1
         if got_ac3 == 1 and got_spatial >= 1:
-            logger.info("Found both AC-3 and spatial audio, removing all other streams")
+            logger.info("Found both AC-3 and spatial-capable audio, removing all other streams")
             for s in english_streams:
-                if s.flag != StreamFlag.KEEP:
+                if s.flag == StreamFlag.UNPROCESSED:
                     s.flag = StreamFlag.REMOVE
             return
         
         # STEP 7: If GOT_AC3 = 1 AND GOT_SPATIAL = 0
         if got_ac3 == 1 and got_spatial == 0:
-            logger.info("Found AC-3 but no spatial audio, removing all other streams")
+            logger.info("Found AC-3 but no spatial-capable audio, removing all other streams")
             for s in english_streams:
-                if s.flag != StreamFlag.KEEP:
+                if s.flag == StreamFlag.UNPROCESSED:
                     s.flag = StreamFlag.REMOVE
             return
         
         # STEP 8: If GOT_AC3 = 0 AND GOT_SPATIAL >= 1
         if got_ac3 == 0 and got_spatial >= 1:
-            ac3_source = got_spatial
-            logger.info(f"No AC-3 found, will create from spatial stream {got_spatial}")
+            logger.info(f"No AC-3 found, will create from spatial-capable stream {got_spatial}")
             # Create AC-3 stream
             spatial_stream = [s for s in english_streams if s.index == got_spatial][0]
             channel_count = min(spatial_stream.channels, 6)
@@ -841,16 +840,16 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
                 flag=StreamFlag.CREATE
             )
             metadata.audio_streams.append(new_ac3)
-            logger.info(f"Creating English AC-3 {channel_layout} from spatial stream {got_spatial}")
+            logger.info(f"Creating English AC-3 {channel_layout} from spatial-capable stream {got_spatial}")
             
             for s in english_streams:
-                if s.flag != StreamFlag.KEEP:
+                if s.flag == StreamFlag.UNPROCESSED:
                     s.flag = StreamFlag.REMOVE
             return
         
         # STEP 9: If GOT_AC3 = 0 AND GOT_SPATIAL = 0
         if got_ac3 == 0 and got_spatial == 0:
-            logger.info("No AC-3 and no spatial audio, finding best stream for AC-3 creation")
+            logger.info("No AC-3 and no spatial-capable audio, finding best stream for AC-3 creation")
             # Find stream with highest channel count (lowest index if tied)
             best_source = None
             max_channels = 0
@@ -861,7 +860,6 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
                     max_channels = s.channels
             
             if best_source:
-                ac3_source = best_source.index
                 best_source.flag = StreamFlag.SOURCE
                 logger.info(f"Using stream {best_source.index} as AC-3 source: {best_source.codec_name} {best_source.channel_layout}")
                 
@@ -882,10 +880,10 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
                     flag=StreamFlag.CREATE
                 )
                 metadata.audio_streams.append(new_ac3)
-                logger.info(f"Creating English AC-3 {channel_layout} from stream {ac3_source}")
+                logger.info(f"Creating English AC-3 {channel_layout} from stream {best_source.index}")
             
             for s in english_streams:
-                if s.flag != StreamFlag.KEEP and s.flag != StreamFlag.SOURCE:
+                if s.flag == StreamFlag.UNPROCESSED:
                     s.flag = StreamFlag.REMOVE
             return
     
@@ -897,7 +895,7 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
         # STEP 1: Keep one original-language AC-3 or best available
         orig_ac3 = None
         for s in original_lang_streams:
-            if s.codec_name == 'ac3' and s.channels >= 6:
+            if s.codec_name == 'ac3':
                 orig_ac3 = s
                 break
         
@@ -914,7 +912,7 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
         # STEP 2: Keep one English AC-3 or create one
         eng_ac3 = None
         for s in english_streams:
-            if s.codec_name == 'ac3' and s.channels >= 6:
+            if s.codec_name == 'ac3':
                 eng_ac3 = s
                 break
         
@@ -955,9 +953,16 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
         
         # STEP 3: Remove all non-kept streams
         for s in original_lang_streams + english_streams + other_streams:
-            if s.flag != StreamFlag.KEEP and s.flag != StreamFlag.SOURCE:
+            if s.flag == StreamFlag.UNPROCESSED or (s.flag != StreamFlag.KEEP and s.flag != StreamFlag.SOURCE):
                 s.flag = StreamFlag.REMOVE
-# END select_audio_streams()
+    
+    # Final validation: ensure NO stream is still UNPROCESSED
+    for s in metadata.audio_streams:
+        if s.flag == StreamFlag.UNPROCESSED:
+            logger.error(f"ERROR: Stream {s.index} still UNPROCESSED after audio selection!")
+            s.flag = StreamFlag.REMOVE
+
+# END [select_audio_streams()]
 
 def select_subtitle_streams(metadata: MediaMetadata) -> None:
     """Apply subtitle selection rules.
