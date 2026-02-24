@@ -1276,16 +1276,25 @@ def generate_new_filename(metadata: MediaMetadata) -> str:
     return new_name
 # END generate_new_filename()
 
-def build_ffmpeg_command(metadata: MediaMetadata, option: str) -> str:
-    """Build ffmpeg command based on selected option."""
-    cmd = ["ffmpeg", "-i", str(metadata.filename), "-map_metadata", "0"]
+def build_ffmpeg_command(metadata: MediaMetadata, option: str) -> List[str]:
+    """Build ffmpeg command as a list of arguments (for subprocess without shell=True).
+    
+    Returns a list suitable for subprocess.run() without shell=True to properly
+    handle file paths with spaces and special characters.
+    """
+    cmd = ["ffmpeg"]
+    
+    # Input file
+    cmd.extend(["-i", str(metadata.filename)])
     
     # Map video stream
+    video_mapped = False
     for video in metadata.video_streams:
         if video.flag == StreamFlag.REENCODE or video.flag == StreamFlag.KEEP:
             cmd.extend(["-map", f"0:{video.index}"])
+            
             if video.flag == StreamFlag.REENCODE or option in ['V', 'B']:
-                # Add video encoding parameters
+                # Video reencoding
                 cmd.extend([
                     "-c:v", "libx265",
                     "-preset", "medium",
@@ -1293,62 +1302,94 @@ def build_ffmpeg_command(metadata: MediaMetadata, option: str) -> str:
                     "-tag:v", "hvc1"
                 ])
             else:
+                # Video copy
                 cmd.extend(["-c:v", "copy"])
+            
+            video_mapped = True
+            break  # Only map one video stream
     
-    # Map audio streams - KEEP streams get copied, SOURCE streams are transcoded to CREATE streams
+    # Map audio streams
+    audio_index = 0
     for audio in metadata.audio_streams:
         if audio.flag == StreamFlag.KEEP:
             cmd.extend(["-map", f"0:{audio.index}"])
-            cmd.extend(["-c:a", "copy"])
+            cmd.extend([f"-c:a:{audio_index}", "copy"])
+            audio_index += 1
         elif audio.flag == StreamFlag.SOURCE:
-            # This stream is the source for AC-3 creation - transcode it
+            # This stream is the source for AC-3 creation
             cmd.extend(["-map", f"0:{audio.index}"])
+            
+            # Determine proper bitrate based on channel count
+            if audio.channels >= 6:
+                bitrate = "640k"
+            elif audio.channels >= 2:
+                bitrate = "192k"
+            else:
+                bitrate = "96k"
+            
             cmd.extend([
-                "-c:a", "ac3",
-                "-b:a", audio.bit_rate,
-                "-ac", str(audio.channels)
+                f"-c:a:{audio_index}", "ac3",
+                f"-b:a:{audio_index}", bitrate,
+                f"-ac:{audio_index}", str(audio.channels)
             ])
             logger.info(f"Creating AC-3 from SOURCE stream {audio.index}: {audio.codec_name} {audio.channel_layout}")
+            audio_index += 1
     
     # Map subtitle streams
+    sub_index = 0
     for sub in metadata.subtitle_streams:
         if sub.flag == StreamFlag.KEEP:
             cmd.extend(["-map", f"0:{sub.index}"])
-            cmd.extend(["-c:s", "copy"])
+            cmd.extend([f"-c:s:{sub_index}", "copy"])
+            sub_index += 1
     
-    # Add metadata
-    cmd.extend([
-        "-metadata", f"title={metadata.omdb_title}",
-        "-metadata", f"year={metadata.omdb_year}",
-        "-metadata", f"comment=Processed by media_reencode.py"
-    ])
+    # Metadata
+    cmd.extend(["-map_metadata", "0"])
+    cmd.extend(["-metadata", f"title={metadata.omdb_title}"])
+    cmd.extend(["-metadata", f"year={metadata.omdb_year}"])
+    cmd.extend(["-metadata", "comment=Processed by media_reencode.py"])
     
-    # Output file
+    # Output file - no shell interpretation, proper path handling
     output_file = metadata.filename.parent / "temp_reencode.mkv"
     cmd.append(str(output_file))
     
-    return " ".join(cmd)
-# END build_ffmpeg_command()
+    return cmd
+
+# END [build_ffmpeg_command()]
 
 def reencode_media(metadata: MediaMetadata, option: str):
-    """Execute reencoding process."""
+    """Execute reencoding process.
+    
+    Takes the build_ffmpeg_command() output (a list) and executes it properly
+    without shell interpretation to handle file paths correctly.
+    """
     cmd = build_ffmpeg_command(metadata, option)
+    
+    # Display command as a readable string (for user information only)
+    cmd_display = " ".join(f'"{arg}"' if ' ' in arg else arg for arg in cmd)
     
     print("\n" + "="*80)
     print("REENCODE COMMAND")
     print("="*80)
-    print(f"\nCommand:\n{cmd}")
+    print(f"\nCommand:\n{cmd_display}")
     
     print("\nParameters:")
-    print("  -map_metadata 0          : Copy all metadata from input")
+    print("  -i FILE                  : Input file")
     print("  -map 0:n                 : Select stream n from input")
     print("  -c:v libx265             : Encode video with H.265/HEVC")
     print("  -preset medium           : Encoding speed/quality tradeoff")
     print("  -crf 23                  : Constant Rate Factor (quality)")
-    print("  -c:a copy                : Copy audio without reencoding")
-    print("  -c:s copy                : Copy subtitles without reencoding")
+    print("  -tag:v hvc1              : HEVC tag for compatibility")
+    print("  -c:a:# codec             : Audio codec (copy or ac3)")
+    print("  -b:a:# bitrate           : Audio bitrate")
+    print("  -ac:# channels           : Audio channels")
+    print("  -c:s:# copy              : Copy subtitles without reencoding")
+    print("  -map_metadata 0          : Copy all metadata from input")
+    print("  -metadata KEY=VALUE      : Set metadata fields")
     
     response = input("\nRun command? [Y/N/Q]: ").strip().upper()
+    if response == 'Q':
+        return
     if response != 'Y':
         return
     
@@ -1364,8 +1405,9 @@ def reencode_media(metadata: MediaMetadata, option: str):
     print("This may take a while...")
     
     try:
-        # Run the command
-        process = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        # Run the command WITHOUT shell=True - cmd is now a proper list
+        # This properly handles file paths with spaces and special characters
+        process = subprocess.run(cmd, capture_output=True, text=True)
         
         end_time = datetime.datetime.now()
         duration = end_time - start_time
@@ -1387,31 +1429,38 @@ def reencode_media(metadata: MediaMetadata, option: str):
             
             # Replace original with new file
             backup_file = metadata.filename.with_suffix('.bak' + metadata.filename.suffix)
-            shutil.move(metadata.filename, backup_file)
-            shutil.move(metadata.filename.parent / "temp_reencode.mkv", metadata.filename)
+            shutil.move(str(metadata.filename), str(backup_file))
+            shutil.move(str(metadata.filename.parent / "temp_reencode.mkv"), str(metadata.filename))
             
-            print(f"\nOriginal file backed up as: {backup_file}")
-            print(f"New file saved as: {metadata.filename}")
+            print(f"\nOriginal file backed up as: {backup_file.name}")
+            print(f"New file saved as: {metadata.filename.name}")
             
         else:
             print(f"\nReencode failed with return code {process.returncode}")
             print(f"Error output:\n{process.stderr}")
             
+            logger.error(f"Reencode failed with return code {process.returncode}")
+            logger.error(f"Error output:\n{process.stderr}")
+            
             send_ntfy_notification(
                 "Reencode Failed",
                 f"Reencode failed for {metadata.filename.name}\n"
-                f"Error: {process.stderr[:200]}...",
+                f"Return code: {process.returncode}\n"
+                f"Error: {process.stderr[:200]}",
                 "high"
             )
             
     except Exception as e:
-        print(f"\nReencode failed: {e}")
+        print(f"\nReencode failed with exception: {e}")
+        logger.error(f"Reencode failed with exception: {e}", exc_info=True)
+        
         send_ntfy_notification(
             "Reencode Failed",
-            f"Reencode failed for {metadata.filename.name}\nError: {e}",
+            f"Reencode failed for {metadata.filename.name}\nException: {str(e)[:200]}",
             "high"
         )
-# END reencode_media()
+
+# END [reencode_media()]
 
 def rename_and_move_file(metadata: MediaMetadata):
     """Handle Option R - Rename and move file."""
