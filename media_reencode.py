@@ -792,7 +792,7 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
                 logger.info(f"Keeping spatial English audio: {s.codec_name} {s.spatial_type}")
                 break
         
-        # STEP 5: If no spatial audio, find stream CAPABLE of spatial audio
+        # STEP 5: If no ACTUAL spatial audio, find stream CAPABLE of spatial audio
         if got_spatial == 0:
             spatial_capable_codecs = ['truehd', 'eac3']
             
@@ -805,7 +805,7 @@ def select_audio_streams(metadata: MediaMetadata) -> None:
         
         # STEP 6: If GOT_AC3 = 1 AND GOT_SPATIAL >= 1
         if got_ac3 == 1 and got_spatial >= 1:
-            logger.info("Found both AC-3 and spatial-capable audio, removing all other streams")
+            logger.info("Found both AC-3 and spatial-capable audio, keeping both")
             for s in english_streams:
                 if s.flag == StreamFlag.UNPROCESSED:
                     s.flag = StreamFlag.REMOVE
