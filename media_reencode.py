@@ -1272,15 +1272,12 @@ def generate_new_filename(metadata: MediaMetadata) -> str:
         else:
             resolution = "SD"
     
-    # Clean title for filename
-    clean_title = re.sub(r'[^\w\s-]', '', metadata.omdb_title)
-    clean_title = re.sub(r'[-\s]+', '.', clean_title).strip('.-')
-    
-    # Format: [MT] ([RY]).[II].[REZ].[EXT]
+    # Format: Title (Year).ext
     ext = metadata.filename.suffix
-    new_name = f"{clean_title}.({metadata.omdb_year}).{metadata.imdb_id}.{resolution}{ext}"
+    new_name = f"{metadata.omdb_title} ({metadata.omdb_year}){ext}"
     
     return new_name
+
 # END generate_new_filename()
 
 def build_ffmpeg_command(metadata: MediaMetadata, option: str) -> List[str]:
@@ -1301,11 +1298,11 @@ def build_ffmpeg_command(metadata: MediaMetadata, option: str) -> List[str]:
             cmd.extend(["-map", f"0:{video.index}"])
             
             if video.flag == StreamFlag.REENCODE or option in ['V', 'B']:
-                # Video reencoding
+                # Video reencoding with quality preservation
                 cmd.extend([
                     "-c:v", "libx265",
-                    "-preset", "medium",
-                    "-crf", "23",
+                    "-preset", "slow",
+                    "-crf", "20",
                     "-tag:v", "hvc1"
                 ])
             else:
@@ -1372,8 +1369,8 @@ def reencode_media(metadata: MediaMetadata, option: str):
     """
     cmd = build_ffmpeg_command(metadata, option)
     
-    # Add progress output to ffmpeg command
-    cmd.extend(["-progress", "pipe:1"])
+    # Add progress output and multiprocess encoding to ffmpeg command
+    cmd.extend(["-progress", "pipe:1", "-threads", "0"])
     
     # Display command as a readable string (for user information only)
     cmd_display = " ".join(f'"{arg}"' if ' ' in arg else arg for arg in cmd)
@@ -1387,8 +1384,8 @@ def reencode_media(metadata: MediaMetadata, option: str):
     print("  -i FILE                  : Input file")
     print("  -map 0:n                 : Select stream n from input")
     print("  -c:v libx265             : Encode video with H.265/HEVC")
-    print("  -preset medium           : Encoding speed/quality tradeoff")
-    print("  -crf 23                  : Constant Rate Factor (quality)")
+    print("  -preset slow             : Encoding speed/quality tradeoff (quality optimized)")
+    print("  -crf 20                  : Constant Rate Factor (quality preservation)")
     print("  -tag:v hvc1              : HEVC tag for compatibility")
     print("  -c:a:# codec             : Audio codec (copy or ac3)")
     print("  -b:a:# bitrate           : Audio bitrate")
@@ -1397,6 +1394,7 @@ def reencode_media(metadata: MediaMetadata, option: str):
     print("  -map_metadata 0          : Copy all metadata from input")
     print("  -metadata KEY=VALUE      : Set metadata fields")
     print("  -progress pipe:1         : Output progress information")
+    print("  -threads 0               : Use all available CPU cores (multiprocess)")
     
     response = input("\nRun command? [Y/N/Q]: ").strip().upper()
     if response == 'Q':
@@ -1459,6 +1457,9 @@ def reencode_media(metadata: MediaMetadata, option: str):
             
             print(f"\nOriginal file backed up as: {backup_file.name}")
             print(f"New file saved as: {metadata.filename.name}")
+            
+            # Automatically rename and move file
+            rename_and_move_file(metadata)
             
         else:
             print(f"\nReencode failed with return code {returncode}")
