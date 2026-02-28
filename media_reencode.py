@@ -533,9 +533,9 @@ def detect_spatial_audio(audio_stream: Dict, filepath: Path) -> Tuple[Optional[s
     
     # DTS-HD MA detection with channel requirement
     if codec_name == 'dts':
-        profile_lower = audio_stream.get('profile', '').lower().replace(' ', '').replace('-', '')
+        profile_normalized = audio_stream.get('profile', '').replace(' ', '').replace('-', '').lower()
         # DTS-HD MA requires at least 6 channels (5.1) to be spatial-capable
-        if profile_lower == 'dtshma' and channels >= 6:
+        if profile_normalized == 'dtshdma' and channels >= 6:
             return 'DTS:X', SpatialAudioConfidence.MEDIUM
     
     # Check for spatial indicators in channel layout (8+ channels)
