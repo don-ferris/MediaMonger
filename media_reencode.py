@@ -1372,6 +1372,9 @@ def reencode_media(metadata: MediaMetadata, option: str):
     """
     cmd = build_ffmpeg_command(metadata, option)
     
+    # Add progress output to ffmpeg command
+    cmd.extend(["-progress", "pipe:1"])
+    
     # Display command as a readable string (for user information only)
     cmd_display = " ".join(f'"{arg}"' if ' ' in arg else arg for arg in cmd)
     
@@ -1393,6 +1396,7 @@ def reencode_media(metadata: MediaMetadata, option: str):
     print("  -c:s:# copy              : Copy subtitles without reencoding")
     print("  -map_metadata 0          : Copy all metadata from input")
     print("  -metadata KEY=VALUE      : Set metadata fields")
+    print("  -progress pipe:1         : Output progress information")
     
     response = input("\nRun command? [Y/N/Q]: ").strip().upper()
     if response == 'Q':
@@ -1409,17 +1413,31 @@ def reencode_media(metadata: MediaMetadata, option: str):
     )
     
     print(f"\nStarting reencode at {start_time}")
-    print("This may take a while...")
+    print("This may take a while...\n")
     
     try:
         # Run the command WITHOUT shell=True - cmd is now a proper list
         # This properly handles file paths with spaces and special characters
-        process = subprocess.run(cmd, capture_output=True, text=True)
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
         
+        # Parse progress output
+        for line in process.stdout:
+            if line.startswith('out_time_ms='):
+                # Progress line received (can be used for percentage tracking)
+                pass
+        
+        process.wait()
         end_time = datetime.datetime.now()
         duration = end_time - start_time
+        returncode = process.returncode
+        stderr_output = process.stderr.read() if process.stderr else ""
         
-        if process.returncode == 0:
+        if returncode == 0:
             print(f"\nReencode completed successfully!")
             print(f"Started: {start_time}")
             print(f"Ended: {end_time}")
@@ -1443,17 +1461,17 @@ def reencode_media(metadata: MediaMetadata, option: str):
             print(f"New file saved as: {metadata.filename.name}")
             
         else:
-            print(f"\nReencode failed with return code {process.returncode}")
-            print(f"Error output:\n{process.stderr}")
+            print(f"\nReencode failed with return code {returncode}")
+            print(f"Error output:\n{stderr_output}")
             
-            logger.error(f"Reencode failed with return code {process.returncode}")
-            logger.error(f"Error output:\n{process.stderr}")
+            logger.error(f"Reencode failed with return code {returncode}")
+            logger.error(f"Error output:\n{stderr_output}")
             
             send_ntfy_notification(
                 "Reencode Failed",
                 f"Reencode failed for {metadata.filename.name}\n"
-                f"Return code: {process.returncode}\n"
-                f"Error: {process.stderr[:200]}",
+                f"Return code: {returncode}\n"
+                f"Error: {stderr_output[:200]}",
                 "high"
             )
             
