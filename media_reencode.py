@@ -490,6 +490,7 @@ def detect_spatial_audio(audio_stream: Dict, filepath: Path) -> Tuple[Optional[s
     """Detect spatial audio formats with confidence scoring."""
     codec_name = audio_stream.get('codec_name', '')
     tags = audio_stream.get('tags', {})
+    channels = audio_stream.get('channels', 0)
     
     # Dolby Atmos detection
     atmos_patterns = ['atmos', 'dolby atmos', 'eac3 joc']
@@ -529,16 +530,21 @@ def detect_spatial_audio(audio_stream: Dict, filepath: Path) -> Tuple[Optional[s
         return 'Dolby Atmos', SpatialAudioConfidence.MEDIUM
     if codec_name == 'eac3':
         return 'Dolby Atmos', SpatialAudioConfidence.MEDIUM
-    if codec_name == 'dts' and audio_stream.get('profile', '').lower() == 'dts_hd_ma':
-        return 'DTS:X', SpatialAudioConfidence.MEDIUM
     
-    # Check for spatial indicators in channel layout
-    channels = audio_stream.get('channels', 0)
+    # DTS-HD MA detection with channel requirement
+    if codec_name == 'dts':
+        profile_lower = audio_stream.get('profile', '').lower().replace(' ', '').replace('-', '')
+        # DTS-HD MA requires at least 6 channels (5.1) to be spatial-capable
+        if profile_lower == 'dtshma' and channels >= 6:
+            return 'DTS:X', SpatialAudioConfidence.MEDIUM
+    
+    # Check for spatial indicators in channel layout (8+ channels)
     if channels >= 8:
         return 'Other Spatial', SpatialAudioConfidence.LOW
     
     return None, None
-# END detect_spatial_audio()
+
+# END [detect_spatial_audio()]
 
 def detect_subtitle_type(sub_stream: Dict) -> SubtitleType:
     """Determine subtitle type from stream metadata."""
