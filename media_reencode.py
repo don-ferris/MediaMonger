@@ -1362,15 +1362,15 @@ def build_ffmpeg_command(metadata: MediaMetadata, option: str) -> List[str]:
 # END [build_ffmpeg_command()]
 
 def reencode_media(metadata: MediaMetadata, option: str):
-    """Execute reencoding process.
+    """Execute reencoding process with real-time progress display.
     
     Takes the build_ffmpeg_command() output (a list) and executes it properly
     without shell interpretation to handle file paths correctly.
     """
     cmd = build_ffmpeg_command(metadata, option)
     
-    # Add progress output and multiprocess encoding to ffmpeg command
-    cmd.extend(["-progress", "pipe:1", "-threads", "0"])
+    # Add multiprocess encoding to ffmpeg command
+    cmd.extend(["-threads", "0"])
     
     # Display command as a readable string (for user information only)
     cmd_display = " ".join(f'"{arg}"' if ' ' in arg else arg for arg in cmd)
@@ -1393,7 +1393,6 @@ def reencode_media(metadata: MediaMetadata, option: str):
     print("  -c:s:# copy              : Copy subtitles without reencoding")
     print("  -map_metadata 0          : Copy all metadata from input")
     print("  -metadata KEY=VALUE      : Set metadata fields")
-    print("  -progress pipe:1         : Output progress information")
     print("  -threads 0               : Use all available CPU cores (multiprocess)")
     
     response = input("\nRun command? [Y/N/Q]: ").strip().upper()
@@ -1411,29 +1410,31 @@ def reencode_media(metadata: MediaMetadata, option: str):
     )
     
     print(f"\nStarting reencode at {start_time}")
-    print("This may take a while...\n")
+    print("Encoding in progress (ffmpeg output below)...\n")
+    print("="*80)
     
     try:
         # Run the command WITHOUT shell=True - cmd is now a proper list
         # This properly handles file paths with spaces and special characters
+        # stderr is redirected to stdout so we see ffmpeg's progress output
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1
         )
         
-        # Parse progress output
+        # Display all ffmpeg output in real-time
         for line in process.stdout:
-            if line.startswith('out_time_ms='):
-                # Progress line received (can be used for percentage tracking)
-                pass
+            print(line.rstrip())
         
         process.wait()
         end_time = datetime.datetime.now()
         duration = end_time - start_time
         returncode = process.returncode
-        stderr_output = process.stderr.read() if process.stderr else ""
+        
+        print("="*80)
         
         if returncode == 0:
             print(f"\nReencode completed successfully!")
@@ -1463,16 +1464,13 @@ def reencode_media(metadata: MediaMetadata, option: str):
             
         else:
             print(f"\nReencode failed with return code {returncode}")
-            print(f"Error output:\n{stderr_output}")
             
             logger.error(f"Reencode failed with return code {returncode}")
-            logger.error(f"Error output:\n{stderr_output}")
             
             send_ntfy_notification(
                 "Reencode Failed",
                 f"Reencode failed for {metadata.filename.name}\n"
-                f"Return code: {returncode}\n"
-                f"Error: {stderr_output[:200]}",
+                f"Return code: {returncode}",
                 "high"
             )
             
